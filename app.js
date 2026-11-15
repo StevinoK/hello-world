@@ -50,6 +50,7 @@ function defaults() {
     seenBadges: [],
     lastLevel: 1,
     theme: 'auto',
+    reminders: { server: '', times: ['08:30', '21:00'], enabled: false },
   };
 }
 
@@ -63,6 +64,7 @@ function load() {
 let S = load();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('⚠️ Could not save — storage full or blocked'); }
+  queueStatus();
 }
 const day = (k) => (S.days[k] ||= { v: {}, c: {} });
 const peekDay = (k) => S.days[k] || { v: {}, c: {} };
@@ -696,6 +698,9 @@ function renderSettings() {
       <button class="btn" id="copyurl">Copy example link</button>
     </section>
 
+    <h2>Reminders</h2>
+    <section class="card small">${remindersHTML()}</section>
+
     <h2>Appearance</h2>
     <section class="card"><div class="seg" role="group" aria-label="Theme">${['auto', 'light', 'dark'].map((m) => `<button data-theme-set="${m}" class="${S.theme === m ? 'on' : ''}">${m[0].toUpperCase() + m.slice(1)}</button>`).join('')}</div></section>
 
@@ -782,11 +787,131 @@ function renderSettings() {
       S = { ...defaults(), ...data }; save(); applyTheme(); toast('✅ Backup restored'); render();
     } catch (_) { toast('⚠️ That file isn\'t a LifeQuest backup'); }
   };
+  bindReminders();
   $('#reset').onclick = () => {
     if (confirm('Erase ALL data and settings on this device? Export a backup first if unsure.') && confirm('Really erase everything?')) {
       S = defaults(); save(); applyTheme(); render();
     }
   };
+}
+
+/* ======================= Push reminders ======================= */
+// Set this to your deployed reminder worker URL to pre-fill it for new installs.
+const DEFAULT_REMINDER_SERVER = '';
+const STATUS_CACHE = 'lifequest-status';
+const remCfg = () => (S.reminders ||= { server: '', times: ['08:30', '21:00'], enabled: false });
+const remServer = () => (remCfg().server || DEFAULT_REMINDER_SERVER).replace(/\/+$/, '');
+
+/** Snapshot of today's progress for the service worker, which writes reminder text from it. */
+let statusTimer = null;
+function queueStatus() { clearTimeout(statusTimer); statusTimer = setTimeout(writeStatus, 300); }
+async function writeStatus() {
+  if (!('caches' in window)) return;
+  try {
+    const k = todayKey(), a = computeAll(), st = a.perDay[k] || dayStats(k), d = peekDay(k);
+    const remaining = [
+      ...activeTrackers().filter((t) => t.dir !== 'none' && t.goal != null && !goalMet(t, d.v[t.id])).map((t) => t.name),
+      ...S.chores.filter((c) => c.freq === 'daily' && !d.c[c.id]).map((c) => c.name),
+    ];
+    const status = {
+      date: k, streak: a.streak, activeToday: st.active, perfect: st.perfect, hit: st.hit, goals: st.goals,
+      remaining, loggedIds: Object.keys(d.v), hasSleep: activeTrackers().some((t) => t.id === 'sleep'),
+    };
+    await (await caches.open(STATUS_CACHE)).put('status', new Response(JSON.stringify(status), { headers: { 'Content-Type': 'application/json' } }));
+  } catch (_) {}
+}
+
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+function pushSupport() {
+  if (isIOS() && !isStandalone()) return 'On iPhone, notifications only work after you Add to Home Screen and open LifeQuest from that icon.';
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) return 'This browser doesn’t support push notifications.';
+  if (Notification.permission === 'denied') return 'Notifications are blocked for this app — allow them in your phone’s settings, then come back.';
+  return null;
+}
+const b64uToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+
+async function api(path, body) {
+  const res = await fetch(remServer() + path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Server error ${res.status}`);
+  return data;
+}
+async function currentSub() {
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+async function enableReminders() {
+  const problem = pushSupport();
+  if (problem) throw new Error(problem);
+  if (!remServer()) throw new Error('Enter your reminder server URL first.');
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') throw new Error('Notification permission was not granted.');
+  const { publicKey } = await api('/vapid');
+  const reg = await navigator.serviceWorker.ready;
+  let sub = await reg.pushManager.getSubscription();
+  // If the server's key changed (e.g. redeployed), resubscribe with the new one.
+  if (sub && sub.options?.applicationServerKey) {
+    const cur = new Uint8Array(sub.options.applicationServerKey), want = b64uToBytes(publicKey);
+    if (cur.length !== want.length || cur.some((b, i) => b !== want[i])) { await sub.unsubscribe(); sub = null; }
+  }
+  sub ||= await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64uToBytes(publicKey) });
+  await writeStatus();
+  await syncReminderTimes(sub);
+  remCfg().enabled = true; save();
+}
+async function syncReminderTimes(sub) {
+  sub ||= await currentSub();
+  if (!sub) throw new Error('This device isn’t subscribed yet.');
+  const times = [...new Set(remCfg().times.filter(Boolean))].sort();
+  await api('/subscribe', { subscription: sub.toJSON(), times, tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+}
+async function disableReminders() {
+  const sub = await currentSub().catch(() => null);
+  if (sub) { await api('/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+  remCfg().enabled = false; save();
+}
+
+function remindersHTML() {
+  const r = remCfg(), problem = pushSupport();
+  const timeRow = (t, i) => `<div class="row" style="margin:6px 0"><input class="inp" type="time" data-remtime="${i}" value="${esc(t)}" aria-label="Reminder time ${i + 1}" style="flex:1">
+      <button class="iconbtn" data-remdel="${i}" aria-label="Remove reminder time">✕</button></div>`;
+  return `
+    <p style="margin-top:0">A nudge at the times you pick. The text is written on your phone from your progress — e.g. <i>“🔥 Your 8-day streak ends at midnight”</i> or <i>“3 goals left: Water, Workout, Tidy up”</i>.</p>
+    ${problem ? `<p style="color:var(--critical)">${esc(problem)}</p>` : ''}
+    <div class="field"><label for="remserver">Reminder server URL</label>
+      <input id="remserver" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://lifequest-reminders.<you>.workers.dev" value="${esc(r.server || DEFAULT_REMINDER_SERVER)}"></div>
+    <label class="small" style="font-weight:600;color:var(--text-secondary)">Remind me at</label>
+    ${r.times.map(timeRow).join('')}
+    ${r.times.length < 4 ? '<button class="btn" id="remadd" style="margin-bottom:10px">+ Add a time</button>' : ''}
+    <div class="row" style="flex-wrap:wrap">
+      ${r.enabled
+        ? '<span style="color:var(--good);font-weight:700">✓ Reminders on</span><span class="spacer"></span><button class="btn" id="remtest">Send test</button><button class="btn danger" id="remoff">Turn off</button>'
+        : '<button class="btn primary block" id="remon">🔔 Turn on reminders</button>'}
+    </div>`;
+}
+
+function bindReminders() {
+  const r = remCfg();
+  const busy = async (btn, fn, okMsg) => {
+    const label = btn.textContent; btn.disabled = true; btn.textContent = '…';
+    try { await fn(); if (okMsg) toast(okMsg); } catch (e) { toast(`⚠️ ${e.message}`); }
+    btn.disabled = false; btn.textContent = label; render();
+  };
+  const resync = () => { if (r.enabled) syncReminderTimes().then(() => toast('🔔 Reminder times updated')).catch((e) => toast(`⚠️ ${e.message}`)); };
+  $('#remserver').onchange = (e) => { r.server = e.target.value.trim(); save(); };
+  $$('[data-remtime]').forEach((inp) => inp.onchange = () => { r.times[+inp.dataset.remtime] = inp.value; save(); resync(); });
+  $$('[data-remdel]').forEach((b) => b.onclick = () => { r.times.splice(+b.dataset.remdel, 1); save(); render(); resync(); });
+  $('#remadd') && ($('#remadd').onclick = () => { r.times.push('12:30'); save(); render(); resync(); });
+  $('#remon') && ($('#remon').onclick = (e) => busy(e.currentTarget, enableReminders, '🔔 Reminders on — you can send a test'));
+  $('#remoff') && ($('#remoff').onclick = (e) => busy(e.currentTarget, disableReminders, 'Reminders off'));
+  $('#remtest') && ($('#remtest').onclick = (e) => busy(e.currentTarget, async () => {
+    await writeStatus();
+    const sub = await currentSub();
+    if (!sub) { r.enabled = false; save(); throw new Error('Subscription expired — turn reminders on again.'); }
+    const out = await api('/test', { endpoint: sub.endpoint });
+    if (!out.ok) throw new Error(`Push service said ${out.pushStatus}`);
+  }, '📨 Test sent — it should arrive in a few seconds'));
 }
 
 /* ======================= Quick-log via URL ======================= */
@@ -846,6 +971,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible' && todayKey() !== lastSeenDay) {
     if (viewDay === lastSeenDay) viewDay = todayKey();
     lastSeenDay = todayKey(); render();
+    writeStatus();
   }
 });
 
@@ -854,6 +980,7 @@ if (!handleQuickLog()) render();
 // Mark existing badges as seen on first run so we don't spam toasts.
 if (!S.seenBadges.length) { S.seenBadges = unlocked(computeAll()).map((b) => b.id); save(); }
 navigator.storage?.persist?.();
+writeStatus();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }

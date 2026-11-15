@@ -52,6 +52,38 @@ Sleep works the same way with *Sleep Analysis* (Calculate Statistics → Sum of 
 
 **Android:** Tasker, MacroDroid or Google Assistant routines can open the same URL. Pass the value from Health Connect or Google Fit.
 
+## Push reminders
+
+You choose up to 4 times a day. At each one your phone gets a nudge written from your progress that day, for example:
+
+- 🔥 *Your 8-day streak ends at midnight*: when nothing is logged yet
+- *3 goals left today*: *Water, Workout, Tidy up · 🔥 8-day streak*
+- *How did you sleep? 😴*: in the morning
+- ⭐ *Perfect day locked in*
+
+**How it works:** phones only let a web app send a notification at a set time if a server pushes it. A tiny free [Cloudflare Worker](reminders/worker.js) stores your reminder times and pokes your phone at each one. The poke carries no data. The app's service worker builds the text on your phone, so your tracking data never leaves the device.
+
+### One-time setup (~5 minutes, free)
+
+You can set it up entirely in the Cloudflare dashboard, with no command line:
+
+1. Create a free account at [dash.cloudflare.com](https://dash.cloudflare.com).
+2. Go to **Storage & databases → KV → Create** and name the namespace `lifequest`.
+3. Go to **Compute (Workers) → Create → Start with Hello World → Deploy**. Then open **Edit code**, replace everything with the contents of [`reminders/worker.js`](reminders/worker.js), and click **Deploy**.
+4. In the worker's **Settings → Bindings → Add → KV namespace**, set the variable name to **`KV`** and pick `lifequest`.
+5. In the worker's **Settings → Trigger events → Add → Cron trigger**, enter `*/5 * * * *`.
+6. Copy the worker's URL (`https://lifequest-reminders.<you>.workers.dev`).
+7. In LifeQuest, go to **Settings → Reminders**, paste the URL, pick your times, tap **Turn on reminders**, then **Send test**.
+
+Or, from a terminal: `cd reminders && npx wrangler login && npx wrangler kv namespace create KV`, paste the id into `wrangler.toml`, then `npx wrangler deploy`.
+
+Notes:
+
+- **iPhone:** web push needs iOS 16.4 or later, and you must open LifeQuest from its **home-screen icon**, not from Safari, to turn reminders on.
+- **Time zones:** reminders follow the time zone your phone had when you last saved your times. Reminder times can arrive up to 5 minutes late.
+- **Locking the server down (optional):** set the worker variable `ALLOWED_ORIGIN` to your Pages origin, e.g. `https://you.github.io`. The server accepts at most 10 devices.
+- **Tests:** `node reminders/test.mjs`.
+
 ## Your data
 
 Everything is stored in your browser's local storage on the device. Export a backup now and then from **Settings → Your data** (also how you move to a new phone). iOS keeps home-screen web apps' data, but deleting the home-screen icon erases it.
