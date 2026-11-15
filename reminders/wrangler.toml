@@ -1,0 +1,16 @@
+name = "lifequest-reminders"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Fire every 5 minutes; the worker checks each device's chosen local times.
+[triggers]
+crons = ["*/5 * * * *"]
+
+# Create with:  npx wrangler kv namespace create KV   — then paste the id below.
+[[kv_namespaces]]
+binding = "KV"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[vars]
+# Lock the API to your app's origin (comma-separate several). "*" allows any.
+ALLOWED_ORIGIN = "*"
