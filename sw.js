@@ -1,6 +1,6 @@
 // Offline support: cache the app shell, serve it cache-first, refresh in the background.
 // Push reminders: the server sends an empty "poke"; we build the message from on-device progress.
-const CACHE = 'lifequest-v3';
+const CACHE = 'lifequest-v4';
 const STATUS_CACHE = 'lifequest-status';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
@@ -48,6 +48,7 @@ function buildReminder(s, now) {
   // A streak survives if the last snapshot was today, or yesterday while active.
   const streak = !s ? 0 : fresh ? s.streak : s.date === yesterday && s.activeToday ? s.streak : 0;
   const morning = now.getHours() < 12;
+  const open = fresh && s.todos ? ` · 📝 ${s.todos} to-do${s.todos === 1 ? '' : 's'} open` : '';
   const tag = 'lifequest-reminder';
 
   if (!fresh || !s.activeToday) {
@@ -59,14 +60,14 @@ function buildReminder(s, now) {
     }
     return { title: 'Nothing logged today yet', body: 'Log one thing tonight to start a new streak 🔥', tag };
   }
-  if (s.perfect) return { title: '⭐ Perfect day locked in', body: `Every goal hit. ${streak}-day streak — see you tomorrow!`, tag };
+  if (s.perfect) return { title: '⭐ Perfect day locked in', body: s.todos ? `Every goal hit — ${s.todos} to-do${s.todos === 1 ? '' : 's'} still open.` : `Every goal hit. ${streak}-day streak — see you tomorrow!`, tag };
   if (morning && s.hasSleep && !s.loggedIds.includes('sleep')) {
     return { title: 'How did you sleep? 😴', body: `Log it to keep your ${streak}-day streak rolling.`, tag };
   }
   const left = s.remaining || [];
   return {
     title: `${left.length} goal${left.length === 1 ? '' : 's'} left today`,
-    body: `${listNames(left)} · 🔥 ${streak}-day streak`,
+    body: `${listNames(left)} · 🔥 ${streak}-day streak${open}`,
     tag,
   };
 }

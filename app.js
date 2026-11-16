@@ -34,6 +34,7 @@ function defaults() {
   return {
     v: 2,
     meals: [...DEFAULT_MEALS],
+    todos: [],         // open ad-hoc to-dos: { id, text, created: 'YYYY-MM-DD' } — removed when done
     created: todayKey(),
     trackers: [
       { id: 'sleep', name: 'Sleep', icon: '😴', unit: 'h', goal: 7.5, dir: 'min', mode: 'set', step: 0.25, presets: [6, 6.5, 7, 7.5, 8, 8.5], on: true },
@@ -108,7 +109,7 @@ function progress(t, val) {
 }
 
 const mealEntries = (d) => Object.entries(d.m || {}).filter(([, v]) => v && String(v).trim());
-const rawActive = (d) => Object.keys(d.v).length > 0 || Object.keys(d.c).length > 0 || mealEntries(d).length > 0;
+const rawActive = (d) => Object.keys(d.v).length > 0 || Object.keys(d.c).length > 0 || mealEntries(d).length > 0 || (d.t || []).length > 0;
 /** Value used for goals. A daily-limit counter (e.g. snacks) you never tapped counts as 0 on any day you used the app. */
 function effVal(t, d) {
   const v = d.v[t.id];
@@ -142,9 +143,11 @@ function dayStats(k) {
   }
   const meals = mealEntries(d).length;
   xp += meals * XP.log;
+  const todosDone = (d.t || []).length;
+  xp += todosDone * XP.log;
   const perfect = goals > 0 && hit === goals;
   if (perfect) xp += XP.perfect;
-  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, meals, active: logged + choresDone + meals > 0 };
+  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, meals, todosDone, active: logged + choresDone + meals + todosDone > 0 };
 }
 
 const levelFloor = (L) => 50 * L * (L - 1); // XP needed to reach level L (L2=100, L3=300, L4=600…)
@@ -158,7 +161,7 @@ function computeAll() {
   const keys = Object.keys(S.days).sort();
   const first = keys.length && keys[0] < today ? keys[0] : today;
   const perDay = {};
-  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, meals: 0, trackers: {} };
+  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, meals: 0, todos: 0, trackers: {} };
   for (const t of S.trackers) agg.trackers[t.id] = { logged: 0, goalDays: 0, max: -Infinity, sum: 0, run: 0, bestRun: 0 };
   let streak = 0, perfectRun = 0;
   for (let k = first; k <= today; k = addDays(k, 1)) {
@@ -172,6 +175,7 @@ function computeAll() {
     agg.total += st.xp;
     agg.chores += st.choresDone;
     agg.meals += st.meals;
+    agg.todos += st.todosDone;
     agg.best = Math.max(agg.best, streak);
     agg.bestPerfectRun = Math.max(agg.bestPerfectRun, perfectRun);
     for (const t of S.trackers) {
@@ -204,6 +208,7 @@ const BADGES = [
   { id: 'work10', ico: '🏋️', name: 'Gym Regular', desc: 'Workout goal on 10 days', p: (a) => [tr(a, 'workout').goalDays, 10] },
   { id: 'work50', ico: '🦾', name: 'Iron Will', desc: 'Workout goal on 50 days', p: (a) => [tr(a, 'workout').goalDays, 50] },
   { id: 'snack7', ico: '🍎', name: 'Snack Control', desc: 'Under your snack limit 7 days in a row', p: (a) => [tr(a, 'snacks').bestRun, 7] },
+  { id: 'todo25', ico: '🗡️', name: 'Task Slayer', desc: 'Finish 25 to-dos', p: (a) => [a.todos, 25] },
   { id: 'meals50', ico: '🍽️', name: 'Food Diary', desc: 'Log 50 meals', p: (a) => [a.meals, 50] },
   { id: 'water30', ico: '🌊', name: 'Hydrated', desc: 'Water goal on 30 days', p: (a) => [tr(a, 'water').goalDays, 30] },
   { id: 'weigh14', ico: '📉', name: 'On the Scale', desc: 'Log weight 14 times', p: (a) => [tr(a, 'weight').logged, 14] },
@@ -258,11 +263,18 @@ function toggleChore(k, id) {
 }
 
 /* ======================= UI: toast, confetti, sheet, tooltip ======================= */
-function toast(msg) {
+function toast(msg, action) {
   const el = document.createElement('div');
   el.className = 'toast'; el.textContent = msg;
+  if (action) {
+    $$('.toast.has-action').forEach((t) => t.remove()); // only the latest action stays undoable
+    const b = document.createElement('button');
+    b.className = 'toast-action'; b.textContent = action.label;
+    b.onclick = () => { el.remove(); action.fn(); };
+    el.append(b); el.classList.add('has-action');
+  }
   $('#toasts').append(el);
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 350); }, 2600);
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 350); }, action ? 4500 : 2600);
 }
 
 function confetti(n = 80) {
@@ -392,6 +404,8 @@ function renderToday() {
     <h2>Track</h2>
     <section class="tiles">${tiles || '<p class="muted">No trackers enabled — add some in Settings.</p>'}</section>
 
+    ${todosHTML(k, isToday, d)}
+
     ${S.meals.length ? `<h2>Meals</h2><section class="card meals">${S.meals.map((m, i) => `
       <label class="meal"><span class="mname">${esc(m)}</span>
         <input data-meal="${esc(m)}" value="${esc(d.m?.[m] ?? '')}" placeholder="What did you have?" list="ml-${i}" enterkeyhint="done" autocomplete="off" autocapitalize="sentences"></label>
@@ -414,6 +428,74 @@ function renderToday() {
   });
   $$('[data-chore]').forEach((b) => b.onclick = () => toggleChore(k, b.dataset.chore));
   bindMeals(k);
+  bindTodos(k);
+}
+
+/* ---------- Ad-hoc to-dos ---------- */
+function todosHTML(k, isToday, d) {
+  const done = d.t || [];
+  const doneList = done.length
+    ? `<details class="table todo-done"><summary>${done.length} done ${isToday ? 'today' : 'this day'} · +${done.length * XP.log} XP</summary><ul>${done.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></details>`
+    : '';
+  if (!isToday) return done.length ? `<h2>To-dos</h2><section class="card todos">${doneList}</section>` : '';
+  const items = S.todos.map((t) => `
+    <div class="todo" data-todo="${t.id}">
+      <button class="box" data-todo-done="${t.id}" role="checkbox" aria-checked="false" aria-label="Mark done: ${esc(t.text)}"></button>
+      <span class="ttext">${esc(t.text)}${t.created < k ? `<span class="when">from ${dayLabel(t.created, { weekday: 'short' })}</span>` : ''}</span>
+      <button class="x" data-todo-del="${t.id}" aria-label="Delete ${esc(t.text)}">✕</button>
+    </div>`).join('');
+  return `<h2>To-dos <span class="muted small" style="text-transform:none;letter-spacing:0">+${XP.log} XP each</span></h2>
+    <section class="card todos">
+      <form class="todo-add" autocomplete="off">
+        <input id="todo-new" placeholder="Add a to-do…" enterkeyhint="send" autocapitalize="sentences" aria-label="New to-do">
+        <button class="btn primary" aria-label="Add to-do">Add</button>
+      </form>
+      ${items}${doneList}
+    </section>`;
+}
+
+function addTodo(text, created = todayKey()) {
+  text = String(text).trim().slice(0, 200);
+  if (!text) return false;
+  (S.todos ||= []).push({ id: 't-' + uid(), text, created });
+  return true;
+}
+
+function bindTodos(k) {
+  const form = $('.todo-add');
+  if (form) form.onsubmit = (e) => {
+    e.preventDefault();
+    const inp = $('#todo-new');
+    if (!addTodo(inp.value)) return;
+    save(); render();
+    $('#todo-new').focus(); // ready for the next one
+  };
+  $$('[data-todo-done]').forEach((b) => b.onclick = () => {
+    const i = S.todos.findIndex((t) => t.id === b.dataset.todoDone);
+    if (i < 0) return;
+    const row = b.closest('.todo');
+    row.classList.add('done'); b.textContent = '✓'; vibrate(10);
+    setTimeout(() => {
+      const before = computeAll().perDay[k] || dayStats(k);
+      const [t] = S.todos.splice(i, 1);
+      (day(k).t ||= []).push(t.text);
+      afterChange(k, before);
+      toast(`✓ ${t.text}  +${XP.log} XP`, { label: 'Undo', fn: () => {
+        const d = day(k), j = (d.t || []).lastIndexOf(t.text);
+        if (j >= 0) d.t.splice(j, 1);
+        if (d.t && !d.t.length) delete d.t;
+        S.todos.splice(Math.min(i, S.todos.length), 0, t);
+        afterChange(k, null);
+      } });
+    }, 280);
+  });
+  $$('[data-todo-del]').forEach((b) => b.onclick = () => {
+    const i = S.todos.findIndex((t) => t.id === b.dataset.todoDel);
+    if (i < 0) return;
+    const [t] = S.todos.splice(i, 1);
+    save(); render();
+    toast('To-do deleted', { label: 'Undo', fn: () => { S.todos.splice(Math.min(i, S.todos.length), 0, t); save(); render(); } });
+  });
 }
 
 /** Most recent distinct entries for a meal, for one-tap autocomplete. */
@@ -806,6 +888,7 @@ function renderSettings() {
         <li><code>add_tracker=value</code> adds to it (e.g. <code>add_workout=30</code>)</li>
         <li><code>chore=Name</code> ticks a chore (comma-separate several)</li>
         <li><code>lunch=Chicken salad</code> logs a meal by its name</li>
+        <li><code>todo=Call dentist</code> adds a to-do (repeat for several)</li>
         <li><code>date=yesterday</code> or <code>date=2026-11-14</code> to log a past day</li>
       </ul>
       <button class="btn" id="copyurl">Copy example link</button>
@@ -932,7 +1015,7 @@ async function writeStatus() {
     ];
     const status = {
       date: k, streak: a.streak, activeToday: st.active, perfect: st.perfect, hit: st.hit, goals: st.goals,
-      remaining, loggedIds: Object.keys(d.v), hasSleep: activeTrackers().some((t) => t.id === 'sleep'),
+      remaining, todos: (S.todos || []).length, loggedIds: Object.keys(d.v), hasSleep: activeTrackers().some((t) => t.id === 'sleep'),
     };
     await (await caches.open(STATUS_CACHE)).put('status', new Response(JSON.stringify(status), { headers: { 'Content-Type': 'application/json' } }));
   } catch (_) {}
@@ -1050,6 +1133,10 @@ function handleQuickLog() {
         const already = c.freq === 'weekly' ? weeklyDoneOn(c.id, k) : peekDay(k).c[c.id];
         if (!already) { day(k).c[c.id] = 1; done.push(`✓ ${c.name}`); }
       }
+      continue;
+    }
+    if (rawKey === 'todo') {
+      if (addTodo(rawVal)) done.push(`📝 ${String(rawVal).trim()}`);
       continue;
     }
     const meal = S.meals.find((m) => m.toLowerCase() === rawKey.toLowerCase());

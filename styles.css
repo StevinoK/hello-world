@@ -332,3 +332,21 @@ code, .code {
 .meal input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 .meal-log .meal-day { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
 .meal-log .meal-day:last-child { border-bottom: 0; }
+
+/* ---------- To-dos ---------- */
+.todos { padding: 0; overflow: hidden; }
+.todo-add { display: flex; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.todo-add input { flex: 1; min-width: 0; border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; font-size: 16px; }
+.todo-add input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.todo { display: flex; align-items: center; gap: 12px; padding: 10px 8px 10px 14px; border-bottom: 1px solid var(--border); transition: opacity .25s, transform .25s; }
+.todo:last-child { border-bottom: 0; }
+.todo .box { width: 26px; height: 26px; border-radius: 50%; border: 2px solid var(--border); background: none; flex: none; padding: 0; color: var(--accent-ink); font-size: 14px; display: grid; place-items: center; }
+.todo .ttext { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.todo .when { display: block; font-size: 12px; color: var(--text-muted); }
+.todo .x { background: none; border: 0; color: var(--text-muted); font-size: 16px; width: 36px; height: 36px; flex: none; }
+.todo.done { opacity: 0; transform: translateX(24px); }
+.todo.done .box { background: var(--good); border-color: var(--good); }
+.todo-done { margin: 0; padding: 10px 14px; }
+.todo-done ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-secondary); }
+.toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
+.toast-action { background: none; border: 0; color: var(--accent-soft); font-weight: 700; padding: 4px 2px; }

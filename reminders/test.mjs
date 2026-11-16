@@ -86,6 +86,10 @@ const base = { date: '2026-11-16', streak: 8, activeToday: true, perfect: false,
 let r = build(base, at('2026-11-16T21:00:00'));
 assert.equal(r.title, '4 goals left today');
 assert.match(r.body, /Water, Workout, Tidy up 10 min \+1 more · 🔥 8-day streak/);
+r = build({ ...base, todos: 2 }, at('2026-11-16T21:00:00'));
+assert.match(r.body, /🔥 8-day streak · 📝 2 to-dos open$/);
+r = build({ ...base, perfect: true, todos: 1 }, at('2026-11-16T21:00:00'));
+assert.equal(r.body, 'Every goal hit — 1 to-do still open.');
 r = build({ ...base, date: '2026-11-15' }, at('2026-11-16T21:00:00'));
 assert.equal(r.title, '🔥 Your 8-day streak ends at midnight');
 r = build({ ...base, date: '2026-11-13' }, at('2026-11-16T21:00:00'));

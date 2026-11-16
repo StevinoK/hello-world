@@ -7,6 +7,7 @@ It's an installable phone app (a PWA, or Progressive Web App) made of plain HTML
 ## Features
 
 - **Today screen.** One tap opens a big number pad with your last value and quick-pick chips. Tracked items that add up (water, workout) get a one-tap **+** button. Chores are checkboxes, with weekly chores counting once per week. Use **‹** to backfill a day you missed.
+- **To-dos.** One-off tasks you add at any time. Tap the circle to finish one: it disappears and earns +10 XP, with a short Undo window. Unfinished to-dos carry over to the next day, labeled with the day you added them.
 - **Meals and snacks.** Each meal has a text box, and suggestions from past entries mean repeat meals take one tap. Snacks is a one-tap counter with a daily **upper limit** (default 2, change it in Settings → Trackers → Snacks → Goal). It turns red when you go over, and staying under it counts toward a perfect day.
 - **Dashboard.** Shows your average daily score versus the previous period, your streak, perfect days and XP. A 15-week consistency heatmap shows how often you logged. Each tracker gets a 7/30/90-day chart with its goal line; weight gets a 7-day moving average. Chore completion rates are shown too. Tap any chart for exact values, or open its table view.
 - **Gamification:**
@@ -41,6 +42,7 @@ https://<you>.github.io/hello-world/?steps=8500&sleep=7.5&add_water=1&chore=Dish
 | `add_workout=30` | add to today's value |
 | `chore=Dishes,Vacuum` | tick chores, matched by name |
 | `lunch=Chicken salad` | log a meal by its name |
+| `todo=Call dentist` | add a to-do (repeat the parameter for several) |
 | `date=yesterday` or `date=2026-11-14` | log a past day |
 
 **iPhone (Shortcuts app):** go to Automation → *Time of Day* (e.g. 9:30 pm) → *Run Immediately*. Add these actions:
