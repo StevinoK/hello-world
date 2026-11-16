@@ -316,3 +316,19 @@ code, .code {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Limits (e.g. snacks) ---------- */
+.tile.over { border-color: color-mix(in srgb, var(--critical) 55%, var(--border)); }
+.tile.over .bar i { background: var(--critical); }
+.tile .badge-over { color: var(--critical); }
+.tile .badge-left { color: var(--text-muted); font-weight: 600; }
+
+/* ---------- Meals ---------- */
+.meals { padding: 4px 14px; }
+.meal { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.meal:last-of-type { border-bottom: 0; }
+.meal .mname { font-weight: 600; font-size: 14px; color: var(--text-secondary); }
+.meal input { border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: 10px 12px; width: 100%; min-width: 0; font-size: 16px; }
+.meal input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+.meal-log .meal-day { padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+.meal-log .meal-day:last-child { border-bottom: 0; }

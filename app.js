@@ -27,15 +27,20 @@ const dayLabel = (k, opts = { weekday: 'short', month: 'short', day: 'numeric' }
 const vibrate = (p = 10) => { try { navigator.vibrate && navigator.vibrate(p); } catch (_) {} };
 
 /* ======================= State ======================= */
+const SNACKS = { id: 'snacks', name: 'Snacks', icon: '🍪', unit: 'snacks', goal: 2, dir: 'max', mode: 'add', step: 1, presets: [1, 2], on: true };
+const DEFAULT_MEALS = ['Breakfast', 'Lunch', 'Dinner'];
+
 function defaults() {
   return {
-    v: 1,
+    v: 2,
+    meals: [...DEFAULT_MEALS],
     created: todayKey(),
     trackers: [
       { id: 'sleep', name: 'Sleep', icon: '😴', unit: 'h', goal: 7.5, dir: 'min', mode: 'set', step: 0.25, presets: [6, 6.5, 7, 7.5, 8, 8.5], on: true },
       { id: 'steps', name: 'Steps', icon: '👟', unit: 'steps', goal: 8000, dir: 'min', mode: 'set', step: 500, presets: [3000, 5000, 8000, 10000, 12000], on: true },
       { id: 'workout', name: 'Workout', icon: '💪', unit: 'min', goal: 30, dir: 'min', mode: 'add', step: 5, presets: [10, 20, 30, 45, 60], on: true },
       { id: 'water', name: 'Water', icon: '💧', unit: 'glasses', goal: 8, dir: 'min', mode: 'add', step: 1, presets: [1, 2, 3], on: true },
+      { ...SNACKS },
       { id: 'weight', name: 'Weight', icon: '⚖️', unit: 'lb', goal: null, dir: 'none', mode: 'set', step: 0.2, presets: [], on: true },
     ],
     chores: [
@@ -57,9 +62,26 @@ function defaults() {
 function load() {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...defaults(), ...JSON.parse(raw) };
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      const s = migrate({ ...defaults(), ...parsed, v: parsed.v || 1 });
+      if (s.v !== parsed.v) localStorage.setItem(KEY, JSON.stringify(s));
+      return s;
+    }
   } catch (_) {}
   return defaults();
+}
+/** Bring older saved data up to date without touching anything the user has customised. */
+function migrate(s) {
+  if ((s.v || 1) < 2) {
+    if (!s.trackers.some((t) => t.id === 'snacks')) {
+      const i = s.trackers.findIndex((t) => t.id === 'water');
+      s.trackers.splice(i < 0 ? s.trackers.length : i + 1, 0, { ...SNACKS });
+    }
+    if (!Array.isArray(s.meals)) s.meals = [...DEFAULT_MEALS];
+    s.v = 2;
+  }
+  return s;
 }
 let S = load();
 function save() {
@@ -85,6 +107,14 @@ function progress(t, val) {
   return clamp(val / t.goal, 0, 1);
 }
 
+const mealEntries = (d) => Object.entries(d.m || {}).filter(([, v]) => v && String(v).trim());
+const rawActive = (d) => Object.keys(d.v).length > 0 || Object.keys(d.c).length > 0 || mealEntries(d).length > 0;
+/** Value used for goals. A daily-limit counter (e.g. snacks) you never tapped counts as 0 on any day you used the app. */
+function effVal(t, d) {
+  const v = d.v[t.id];
+  return v == null && t.dir === 'max' && t.mode === 'add' && rawActive(d) ? 0 : v;
+}
+
 /** Who completed which weekly chore during the week containing k (any day Mon–Sun). */
 function weeklyDoneOn(choreId, k) {
   const ws = weekStart(k);
@@ -103,16 +133,18 @@ function dayStats(k) {
     if (val != null) { logged++; xp += XP.log; }
     if (t.dir === 'none' || t.goal == null) continue; // "just log" trackers are optional
     goals++;
-    if (goalMet(t, val)) { hit++; xp += XP.goal; }
+    if (goalMet(t, effVal(t, d))) { hit++; xp += XP.goal; }
   }
   for (const c of S.chores) {
     const done = !!d.c[c.id];
     if (done) { xp += c.pts; choresDone++; }
     if (c.freq === 'daily') { goals++; if (done) hit++; }
   }
+  const meals = mealEntries(d).length;
+  xp += meals * XP.log;
   const perfect = goals > 0 && hit === goals;
   if (perfect) xp += XP.perfect;
-  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, active: logged + choresDone > 0 };
+  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, meals, active: logged + choresDone + meals > 0 };
 }
 
 const levelFloor = (L) => 50 * L * (L - 1); // XP needed to reach level L (L2=100, L3=300, L4=600…)
@@ -126,7 +158,7 @@ function computeAll() {
   const keys = Object.keys(S.days).sort();
   const first = keys.length && keys[0] < today ? keys[0] : today;
   const perDay = {};
-  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, trackers: {} };
+  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, meals: 0, trackers: {} };
   for (const t of S.trackers) agg.trackers[t.id] = { logged: 0, goalDays: 0, max: -Infinity, sum: 0, run: 0, bestRun: 0 };
   let streak = 0, perfectRun = 0;
   for (let k = first; k <= today; k = addDays(k, 1)) {
@@ -139,12 +171,13 @@ function computeAll() {
     perDay[k] = st;
     agg.total += st.xp;
     agg.chores += st.choresDone;
+    agg.meals += st.meals;
     agg.best = Math.max(agg.best, streak);
     agg.bestPerfectRun = Math.max(agg.bestPerfectRun, perfectRun);
     for (const t of S.trackers) {
-      const a = agg.trackers[t.id], val = d.v[t.id];
+      const a = agg.trackers[t.id], val = d.v[t.id], ev = effVal(t, d);
       if (val != null) { a.logged++; a.sum += val; a.max = Math.max(a.max, val); }
-      if (val != null && goalMet(t, val) && t.dir !== 'none') { a.goalDays++; a.run++; a.bestRun = Math.max(a.bestRun, a.run); }
+      if (ev != null && goalMet(t, ev) && t.dir !== 'none') { a.goalDays++; a.run++; a.bestRun = Math.max(a.bestRun, a.run); }
       else if (k !== today) a.run = 0;
     }
   }
@@ -170,6 +203,8 @@ const BADGES = [
   { id: 'sleep7', ico: '🛌', name: 'Well Rested', desc: 'Sleep goal 7 nights in a row', p: (a) => [tr(a, 'sleep').bestRun, 7] },
   { id: 'work10', ico: '🏋️', name: 'Gym Regular', desc: 'Workout goal on 10 days', p: (a) => [tr(a, 'workout').goalDays, 10] },
   { id: 'work50', ico: '🦾', name: 'Iron Will', desc: 'Workout goal on 50 days', p: (a) => [tr(a, 'workout').goalDays, 50] },
+  { id: 'snack7', ico: '🍎', name: 'Snack Control', desc: 'Under your snack limit 7 days in a row', p: (a) => [tr(a, 'snacks').bestRun, 7] },
+  { id: 'meals50', ico: '🍽️', name: 'Food Diary', desc: 'Log 50 meals', p: (a) => [a.meals, 50] },
   { id: 'water30', ico: '🌊', name: 'Hydrated', desc: 'Water goal on 30 days', p: (a) => [tr(a, 'water').goalDays, 30] },
   { id: 'weigh14', ico: '📉', name: 'On the Scale', desc: 'Log weight 14 times', p: (a) => [tr(a, 'weight').logged, 14] },
   { id: 'chores50', ico: '🧹', name: 'Clean Machine', desc: '50 chores done', p: (a) => [a.chores, 50] },
@@ -303,15 +338,23 @@ function renderToday() {
   const title = isToday ? 'Today' : daysBetween(k, todayKey()) === 1 ? 'Yesterday' : dayLabel(k, { weekday: 'long' });
 
   const tiles = activeTrackers().map((t) => {
-    const val = d.v[t.id], met = val != null && t.dir !== 'none' && t.goal != null && goalMet(t, val);
-    const goalTxt = t.dir === 'none' || t.goal == null ? '' : ` <small>/ ${fmt(t.goal)}${t.dir === 'max' ? ' max' : ''}</small>`;
-    return `<button class="tile ${met ? 'met' : ''}" data-log="${t.id}" aria-label="Log ${esc(t.name)}">
+    const hasGoal = t.dir !== 'none' && t.goal != null;
+    const isLimit = hasGoal && t.dir === 'max';
+    // Limit counters (snacks) always show a number: not tapping means zero.
+    const val = isLimit && t.mode === 'add' ? (d.v[t.id] ?? 0) : d.v[t.id];
+    const met = !isLimit && hasGoal && val != null && goalMet(t, val);
+    const over = isLimit && val != null && !goalMet(t, val);
+    const goalTxt = !hasGoal ? '' : ` <small>/ ${fmt(t.goal)}${isLimit ? ' max' : ''}</small>`;
+    const barW = isLimit ? clamp((val ?? 0) / (t.goal || 1), 0, 1) : progress(t, val);
+    return `<button class="tile ${met ? 'met' : ''} ${over ? 'over' : ''}" data-log="${t.id}" aria-label="Log ${esc(t.name)}">
       ${met ? '<span class="badge-met">✓ goal</span>' : ''}
+      ${over ? '<span class="badge-met badge-over">over limit</span>' : ''}
+      ${isLimit && !over && val > 0 ? `<span class="badge-met badge-left">${round(t.goal - val, 2)} left</span>` : ''}
       <span class="name">${esc(t.icon)} ${esc(t.name)}</span>
       ${val == null ? `<span class="val empty">Tap to log</span>` : `<span class="val">${fmt(val)}${goalTxt}</span>`}
       ${t.unit && val != null ? `<span class="small muted">${esc(t.unit)}</span>` : ''}
       ${t.mode === 'add' ? `<span class="quick" data-quick="${t.id}" role="button" aria-label="Add ${t.step} ${esc(t.unit)}">+</span>` : ''}
-      <span class="bar"><i style="width:${progress(t, val) * 100}%"></i></span>
+      <span class="bar"><i style="width:${barW * 100}%"></i></span>
     </button>`;
   }).join('');
 
@@ -349,6 +392,11 @@ function renderToday() {
     <h2>Track</h2>
     <section class="tiles">${tiles || '<p class="muted">No trackers enabled — add some in Settings.</p>'}</section>
 
+    ${S.meals.length ? `<h2>Meals</h2><section class="card meals">${S.meals.map((m, i) => `
+      <label class="meal"><span class="mname">${esc(m)}</span>
+        <input data-meal="${esc(m)}" value="${esc(d.m?.[m] ?? '')}" placeholder="What did you have?" list="ml-${i}" enterkeyhint="done" autocomplete="off" autocapitalize="sentences"></label>
+      <datalist id="ml-${i}">${pastMeals(m).map((x) => `<option value="${esc(x)}">`).join('')}</datalist>`).join('')}</section>` : ''}
+
     ${daily.length ? `<h2>Daily chores</h2><section class="card chores">${daily.map(choreRow).join('')}</section>` : ''}
     ${weekly.length ? `<h2>This week</h2><section class="card chores">${weekly.map(choreRow).join('')}</section>` : ''}
   `;
@@ -365,6 +413,50 @@ function renderToday() {
     toast(`${t.icon} +${t.step} ${t.unit}`);
   });
   $$('[data-chore]').forEach((b) => b.onclick = () => toggleChore(k, b.dataset.chore));
+  bindMeals(k);
+}
+
+/** Most recent distinct entries for a meal, for one-tap autocomplete. */
+function pastMeals(meal) {
+  const out = [];
+  for (const dk of Object.keys(S.days).sort().reverse()) {
+    const v = S.days[dk].m?.[meal]?.trim();
+    if (v && !out.some((x) => x.toLowerCase() === v.toLowerCase())) out.push(v);
+    if (out.length >= 20) break;
+  }
+  return out;
+}
+
+function bindMeals(k) {
+  const sec = $('.meals');
+  if (!sec) return;
+  let before = null, timer = null;
+  const storeAll = () => {
+    const d = day(k);
+    d.m ||= {};
+    for (const inp of $$('[data-meal]', sec)) {
+      const v = inp.value.trim();
+      if (v) d.m[inp.dataset.meal] = v; else delete d.m[inp.dataset.meal];
+    }
+    if (!Object.keys(d.m).length) delete d.m;
+    save();
+  };
+  let snap = null;
+  sec.addEventListener('focusin', () => {
+    if (before) return;
+    before = computeAll().perDay[k] || dayStats(k);
+    snap = JSON.stringify(peekDay(k).m || {});
+  });
+  sec.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(storeAll, 600); });
+  sec.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('[data-meal]')) e.target.blur(); });
+  // Only re-render once focus has left the meals card, so moving between fields never loses your place.
+  sec.addEventListener('focusout', () => setTimeout(() => {
+    if (sec.contains(document.activeElement)) return;
+    clearTimeout(timer);
+    storeAll();
+    const b = before; before = null;
+    if (JSON.stringify(peekDay(k).m || {}) !== snap) afterChange(k, b);
+  }, 0));
 }
 
 function lastValue(id, before) {
@@ -425,17 +517,17 @@ function renderDash() {
   const delta = prevScore ? Math.round((avgScore - prevScore) * 100) : null;
 
   const trackerCards = activeTrackers().map((t, i) => {
-    const vals = keys.map((k) => peekDay(k).v[t.id] ?? null);
+    const vals = keys.map((k) => effVal(t, peekDay(k)) ?? null);
     const got = vals.filter((v) => v != null);
     const met = keys.filter((k, j) => vals[j] != null && goalMet(t, vals[j]) && t.dir !== 'none').length;
     const meta = t.id === 'weight' || t.dir === 'none'
       ? (got.length >= 2 ? `${fmt(got[got.length - 1], t.unit)} · ${got[got.length - 1] - got[0] >= 0 ? '+' : ''}${fmt(round(got[got.length - 1] - got[0], 1))} over ${range}d` : got.length ? fmt(got[0], t.unit) : 'no data yet')
-      : `avg ${fmt(round(avg(got) ?? 0, 1))} · goal hit ${met}/${range}d`;
+      : `avg ${fmt(round(avg(got) ?? 0, 1))} · ${t.dir === 'max' ? 'within limit' : 'goal hit'} ${met}/${range}d`;
     const isLine = t.dir === 'none' || t.id === 'weight';
     return `<section class="card chart-card">
       <div class="head"><span class="title">${esc(t.icon)} ${esc(t.name)}</span><span class="meta">${meta}</span></div>
       <div data-chart="${i}" data-tip-host></div>
-      ${!isLine && t.goal != null ? `<div class="legend"><span><i style="background:var(--series-1);height:10px;width:10px"></i>Goal met</span><span><i style="background:var(--series-1-soft);height:10px;width:10px"></i>Below goal</span><span><i style="background:none;border-top:2px dashed var(--text-secondary);height:0"></i>Goal ${fmt(t.goal, t.unit)}</span></div>` : ''}
+      ${!isLine && t.goal != null ? `<div class="legend"><span><i style="background:var(--series-1);height:10px;width:10px"></i>${t.dir === 'max' ? 'Within limit' : 'Goal met'}</span><span><i style="background:var(--series-1-soft);height:10px;width:10px"></i>${t.dir === 'max' ? 'Over limit' : 'Below goal'}</span><span><i style="background:none;border-top:2px dashed var(--text-secondary);height:0"></i>${t.dir === 'max' ? 'Limit' : 'Goal'} ${fmt(t.goal, t.unit)}</span></div>` : ''}
       ${isLine ? `<div class="legend"><span><i style="background:var(--series-1)"></i>Daily</span><span><i style="background:var(--series-2)"></i>7-day average</span></div>` : ''}
       ${tableHTML(keys, vals, t)}
     </section>`;
@@ -468,13 +560,15 @@ function renderDash() {
     <h2>Trackers · last ${range} days</h2>
     ${trackerCards}
 
+    ${mealsLogHTML(keys)}
+
     ${S.chores.length ? `<h2>Chore completion · last ${range} days</h2><section class="card hbar">${chores}</section>` : ''}
   `;
 
   $$('[data-range]').forEach((b) => b.onclick = () => { range = +b.dataset.range; render(); });
   activeTrackers().forEach((t, i) => {
     const host = $(`[data-chart="${i}"]`);
-    const vals = keys.map((k) => peekDay(k).v[t.id] ?? null);
+    const vals = keys.map((k) => effVal(t, peekDay(k)) ?? null);
     (t.dir === 'none' || t.id === 'weight' ? lineChart : barChart)(host, keys, vals, t);
   });
   $$('.heat .cell[data-k]').forEach((c) => {
@@ -486,6 +580,17 @@ function renderDash() {
     c.addEventListener('pointerenter', tip); c.addEventListener('pointerdown', tip);
     c.addEventListener('pointerleave', (e) => e.pointerType === 'mouse' && hideTip());
   });
+}
+
+function mealsLogHTML(keys) {
+  const days = keys.slice().reverse().filter((k) => mealEntries(peekDay(k)).length);
+  if (!days.length) return '';
+  const row = (k) => `<div class="meal-day"><div class="small muted">${dayLabel(k)}</div>
+    ${mealEntries(peekDay(k)).map(([n, v]) => `<div><span class="muted">${esc(n)}:</span> ${esc(v)}</div>`).join('')}</div>`;
+  return `<h2>Meals · last ${range} days</h2><section class="card meal-log">
+    ${days.slice(0, 5).map(row).join('')}
+    ${days.length > 5 ? `<details class="table"><summary>Show ${days.length - 5} more days</summary>${days.slice(5).map(row).join('')}</details>` : ''}
+  </section>`;
 }
 
 function heatmapHTML(a) {
@@ -564,7 +669,7 @@ function barChart(host, keys, vals, t) {
   host.innerHTML = `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(t.name)} per day, bar chart">${grid}${bars}${goal}
     <line class="guide" y1="${pad.t}" y2="${h - pad.b}" stroke="var(--text-muted)" stroke-width="1" opacity="0"/></svg>`;
   const svg = $('svg', host);
-  attachHover(host, svg, keys, w, pad, (i) => `<b>${dayLabel(keys[i])}</b><br>${vals[i] == null ? 'not logged' : `${fmt(vals[i], t.unit)}${t.dir !== 'none' && t.goal != null ? (goalMet(t, vals[i]) ? ' · goal met ✓' : ' · below goal') : ''}`}`, $('.guide', svg));
+  attachHover(host, svg, keys, w, pad, (i) => `<b>${dayLabel(keys[i])}</b><br>${vals[i] == null ? 'not logged' : `${fmt(vals[i], t.unit)}${t.dir !== 'none' && t.goal != null ? (goalMet(t, vals[i]) ? (t.dir === 'max' ? ' · within limit ✓' : ' · goal met ✓') : (t.dir === 'max' ? ' · over limit' : ' · below goal')) : ''}`}`, $('.guide', svg));
 }
 
 function lineChart(host, keys, vals, t) {
@@ -685,6 +790,13 @@ function renderSettings() {
       <button class="btn block" id="addchore" style="margin-top:8px">+ Add chore</button>
     </section>
 
+    <h2>Meals</h2>
+    <section class="card small">
+      <div class="field" style="margin-top:0"><label for="mealnames">Meals to log (comma-separated, leave empty to hide)</label>
+        <input id="mealnames" value="${esc(S.meals.join(', '))}" placeholder="Breakfast, Lunch, Dinner"></div>
+      <p class="muted" style="margin:0">Each logged meal earns +${XP.log} XP. Past entries show up as suggestions, so repeat meals take one tap.</p>
+    </section>
+
     <h2>Automatic logging</h2>
     <section class="card small">
       <p style="margin-top:0">Open a link like this to log without tapping through the app — perfect for an <b>iOS Shortcut</b> or <b>Android automation</b> that reads your step count / sleep from Health and runs every night:</p>
@@ -693,6 +805,7 @@ function renderSettings() {
         <li><code>tracker=value</code> sets a value (e.g. <code>weight=172.4</code>)</li>
         <li><code>add_tracker=value</code> adds to it (e.g. <code>add_workout=30</code>)</li>
         <li><code>chore=Name</code> ticks a chore (comma-separate several)</li>
+        <li><code>lunch=Chicken salad</code> logs a meal by its name</li>
         <li><code>date=yesterday</code> or <code>date=2026-11-14</code> to log a past day</li>
       </ul>
       <button class="btn" id="copyurl">Copy example link</button>
@@ -788,6 +901,10 @@ function renderSettings() {
     } catch (_) { toast('⚠️ That file isn\'t a LifeQuest backup'); }
   };
   bindReminders();
+  $('#mealnames').onchange = (e) => {
+    S.meals = [...new Set(e.target.value.split(',').map((x) => x.trim()).filter(Boolean))];
+    save(); toast('🍽️ Meals updated');
+  };
   $('#reset').onclick = () => {
     if (confirm('Erase ALL data and settings on this device? Export a backup first if unsure.') && confirm('Really erase everything?')) {
       S = defaults(); save(); applyTheme(); render();
@@ -810,7 +927,7 @@ async function writeStatus() {
   try {
     const k = todayKey(), a = computeAll(), st = a.perDay[k] || dayStats(k), d = peekDay(k);
     const remaining = [
-      ...activeTrackers().filter((t) => t.dir !== 'none' && t.goal != null && !goalMet(t, d.v[t.id])).map((t) => t.name),
+      ...activeTrackers().filter((t) => t.dir === 'min' && t.goal != null && !goalMet(t, d.v[t.id])).map((t) => t.name),
       ...S.chores.filter((c) => c.freq === 'daily' && !d.c[c.id]).map((c) => c.name),
     ];
     const status = {
@@ -935,6 +1052,12 @@ function handleQuickLog() {
       }
       continue;
     }
+    const meal = S.meals.find((m) => m.toLowerCase() === rawKey.toLowerCase());
+    if (meal) {
+      const v = String(rawVal).trim();
+      if (v) { (day(k).m ||= {})[meal] = v; done.push(`🍽️ ${meal}`); }
+      continue;
+    }
     const add = rawKey.startsWith('add_');
     const t = find(add ? rawKey.slice(4) : rawKey);
     const v = parseFloat(String(rawVal).replace(/,/g, ''));
@@ -983,4 +1106,11 @@ navigator.storage?.persist?.();
 writeStatus();
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  // When a new version installs, reload once (unless you're mid-typing) so new features show up.
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController) return;
+    const reload = () => { if (!document.activeElement?.matches('input, textarea')) location.reload(); else setTimeout(reload, 5000); };
+    reload();
+  });
 }

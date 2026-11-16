@@ -1,12 +1,12 @@
 // Offline support: cache the app shell, serve it cache-first, refresh in the background.
 // Push reminders: the server sends an empty "poke"; we build the message from on-device progress.
-const CACHE = 'lifequest-v2';
+const CACHE = 'lifequest-v3';
 const STATUS_CACHE = 'lifequest-status';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
