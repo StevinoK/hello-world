@@ -34,6 +34,9 @@ function defaults() {
   return {
     v: 2,
     meals: [...DEFAULT_MEALS],
+    strength: true,    // show the Strength card on Today
+    wUnit: 'lb',
+    exercises: ['Bench press', 'Squat', 'Deadlift', 'Overhead press', 'Barbell row', 'Pull-up', 'Lat pulldown', 'Dumbbell curl', 'Leg press', 'Push-up'],
     todos: [],         // open ad-hoc to-dos: { id, text, created: 'YYYY-MM-DD' } — removed when done
     created: todayKey(),
     trackers: [
@@ -88,13 +91,14 @@ let S = load();
 function save() {
   try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { toast('⚠️ Could not save — storage full or blocked'); }
   queueStatus();
+  queueSync();
 }
 const day = (k) => (S.days[k] ||= { v: {}, c: {} });
 const peekDay = (k) => S.days[k] || { v: {}, c: {} };
 const activeTrackers = () => S.trackers.filter((t) => t.on);
 
 /* ======================= Scoring & gamification ======================= */
-const XP = { log: 10, goal: 20, perfect: 50, streakPer: 5, streakCap: 10 };
+const XP = { log: 10, goal: 20, perfect: 50, streakPer: 5, streakCap: 10, pr: 25 };
 
 function goalMet(t, val) {
   if (val == null) return false;
@@ -109,7 +113,13 @@ function progress(t, val) {
 }
 
 const mealEntries = (d) => Object.entries(d.m || {}).filter(([, v]) => v && String(v).trim());
-const rawActive = (d) => Object.keys(d.v).length > 0 || Object.keys(d.c).length > 0 || mealEntries(d).length > 0 || (d.t || []).length > 0;
+const doneSets = (e) => (e.sets || []).filter((x) => x.done);
+const strengthDone = (d) => (d.w || []).some((e) => doneSets(e).length);
+const rawActive = (d) => Object.keys(d.v).length > 0 || Object.keys(d.c).length > 0 || mealEntries(d).length > 0 || (d.t || []).length > 0 || strengthDone(d);
+/** Goal check for a tracker on a day. Any logged strength exercise also counts as a workout. */
+function trackerMet(t, d) {
+  return goalMet(t, effVal(t, d)) || (t.id === 'workout' && strengthDone(d));
+}
 /** Value used for goals. A daily-limit counter (e.g. snacks) you never tapped counts as 0 on any day you used the app. */
 function effVal(t, d) {
   const v = d.v[t.id];
@@ -134,7 +144,7 @@ function dayStats(k) {
     if (val != null) { logged++; xp += XP.log; }
     if (t.dir === 'none' || t.goal == null) continue; // "just log" trackers are optional
     goals++;
-    if (goalMet(t, effVal(t, d))) { hit++; xp += XP.goal; }
+    if (trackerMet(t, d)) { hit++; xp += XP.goal; }
   }
   for (const c of S.chores) {
     const done = !!d.c[c.id];
@@ -145,9 +155,12 @@ function dayStats(k) {
   xp += meals * XP.log;
   const todosDone = (d.t || []).length;
   xp += todosDone * XP.log;
+  const exercisesDone = (d.w || []).filter((e) => doneSets(e).length).length;
+  const setsDone = (d.w || []).reduce((n, e) => n + doneSets(e).length, 0);
+  xp += exercisesDone * XP.log;
   const perfect = goals > 0 && hit === goals;
   if (perfect) xp += XP.perfect;
-  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, meals, todosDone, active: logged + choresDone + meals + todosDone > 0 };
+  return { goals, hit, score: goals ? hit / goals : 0, xp, perfect, logged, choresDone, meals, todosDone, exercisesDone, setsDone, prList: [], active: logged + choresDone + meals + todosDone + exercisesDone > 0 };
 }
 
 const levelFloor = (L) => 50 * L * (L - 1); // XP needed to reach level L (L2=100, L3=300, L4=600…)
@@ -161,7 +174,8 @@ function computeAll() {
   const keys = Object.keys(S.days).sort();
   const first = keys.length && keys[0] < today ? keys[0] : today;
   const perDay = {};
-  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, meals: 0, todos: 0, trackers: {} };
+  const agg = { total: 0, streak: 0, best: 0, perfect: 0, bestPerfectRun: 0, activeDays: 0, chores: 0, meals: 0, todos: 0, sets: 0, prs: 0, trackers: {} };
+  const bests = {}; // `${exercise}|w` or `${exercise}|r` → best so far (for personal records)
   for (const t of S.trackers) agg.trackers[t.id] = { logged: 0, goalDays: 0, max: -Infinity, sum: 0, run: 0, bestRun: 0 };
   let streak = 0, perfectRun = 0;
   for (let k = first; k <= today; k = addDays(k, 1)) {
@@ -169,6 +183,13 @@ function computeAll() {
     const d = peekDay(k);
     if (st.active) { streak++; agg.activeDays++; } else if (k !== today) streak = 0;
     if (st.perfect) { perfectRun++; agg.perfect++; } else if (k !== today) perfectRun = 0;
+    for (const e of d.w || []) {
+      const top = topOf(doneSets(e));
+      if (!top) continue;
+      const bk = `${e.ex.toLowerCase()}|${top.kind}`;
+      if (bests[bk] != null && top.value > bests[bk]) { st.prList.push({ ex: e.ex, ...top }); st.xp += XP.pr; }
+      bests[bk] = Math.max(bests[bk] ?? -Infinity, top.value);
+    }
     const bonus = st.active ? Math.min(streak, XP.streakCap) * XP.streakPer : 0;
     st.streakBonus = bonus; st.xp += bonus; st.streak = streak;
     perDay[k] = st;
@@ -176,12 +197,14 @@ function computeAll() {
     agg.chores += st.choresDone;
     agg.meals += st.meals;
     agg.todos += st.todosDone;
+    agg.sets += st.setsDone;
+    agg.prs += st.prList.length;
     agg.best = Math.max(agg.best, streak);
     agg.bestPerfectRun = Math.max(agg.bestPerfectRun, perfectRun);
     for (const t of S.trackers) {
       const a = agg.trackers[t.id], val = d.v[t.id], ev = effVal(t, d);
       if (val != null) { a.logged++; a.sum += val; a.max = Math.max(a.max, val); }
-      if (ev != null && goalMet(t, ev) && t.dir !== 'none') { a.goalDays++; a.run++; a.bestRun = Math.max(a.bestRun, a.run); }
+      if (t.dir !== 'none' && ((ev != null && goalMet(t, ev)) || trackerMet(t, d))) { a.goalDays++; a.run++; a.bestRun = Math.max(a.bestRun, a.run); }
       else if (k !== today) a.run = 0;
     }
   }
@@ -189,6 +212,14 @@ function computeAll() {
   agg.level = levelOf(agg.total);
   agg.perDay = perDay;
   return agg;
+}
+
+/** Best set of a session: heaviest weight, or most reps if no weight was used (bodyweight). */
+function topOf(sets) {
+  const weighted = sets.filter((x) => x.w > 0);
+  if (weighted.length) return { kind: 'w', value: Math.max(...weighted.map((x) => x.w)) };
+  const reps = sets.filter((x) => x.r > 0);
+  return reps.length ? { kind: 'r', value: Math.max(...reps.map((x) => x.r)) } : null;
 }
 
 /* ---- Badges: each returns [current, target] so locked ones show progress ---- */
@@ -208,6 +239,8 @@ const BADGES = [
   { id: 'work10', ico: '🏋️', name: 'Gym Regular', desc: 'Workout goal on 10 days', p: (a) => [tr(a, 'workout').goalDays, 10] },
   { id: 'work50', ico: '🦾', name: 'Iron Will', desc: 'Workout goal on 50 days', p: (a) => [tr(a, 'workout').goalDays, 50] },
   { id: 'snack7', ico: '🍎', name: 'Snack Control', desc: 'Under your snack limit 7 days in a row', p: (a) => [tr(a, 'snacks').bestRun, 7] },
+  { id: 'sets100', ico: '🏋️‍♂️', name: 'Iron Logger', desc: 'Log 100 sets', p: (a) => [a.sets, 100] },
+  { id: 'pr10', ico: '🥇', name: 'PR Hunter', desc: 'Set 10 personal records', p: (a) => [a.prs, 10] },
   { id: 'todo25', ico: '🗡️', name: 'Task Slayer', desc: 'Finish 25 to-dos', p: (a) => [a.todos, 25] },
   { id: 'meals50', ico: '🍽️', name: 'Food Diary', desc: 'Log 50 meals', p: (a) => [a.meals, 50] },
   { id: 'water30', ico: '🌊', name: 'Hydrated', desc: 'Water goal on 30 days', p: (a) => [tr(a, 'water').goalDays, 30] },
@@ -225,6 +258,11 @@ function afterChange(k, before) {
   save();
   const a = computeAll();
   const now = a.perDay[k] || dayStats(k);
+  if (before && now.prList.length > (before.prList || []).length) {
+    const pr = now.prList[now.prList.length - 1];
+    toast(`🏆 New PR! ${pr.ex}: ${pr.kind === 'w' ? fmt(pr.value, S.wUnit) : `${pr.value} reps`} (+${XP.pr} XP)`);
+    confetti(180); vibrate([30, 50, 30]);
+  }
   if (before) {
     if (now.perfect && !before.perfect) { toast('⭐ Perfect day! +50 XP'); confetti(160); vibrate([20, 40, 20]); }
     else if (now.hit > before.hit) { confetti(40); vibrate(15); }
@@ -354,16 +392,16 @@ function renderToday() {
     const isLimit = hasGoal && t.dir === 'max';
     // Limit counters (snacks) always show a number: not tapping means zero.
     const val = isLimit && t.mode === 'add' ? (d.v[t.id] ?? 0) : d.v[t.id];
-    const met = !isLimit && hasGoal && val != null && goalMet(t, val);
+    const met = !isLimit && hasGoal && trackerMet(t, d);
     const over = isLimit && val != null && !goalMet(t, val);
     const goalTxt = !hasGoal ? '' : ` <small>/ ${fmt(t.goal)}${isLimit ? ' max' : ''}</small>`;
-    const barW = isLimit ? clamp((val ?? 0) / (t.goal || 1), 0, 1) : progress(t, val);
+    const barW = isLimit ? clamp((val ?? 0) / (t.goal || 1), 0, 1) : met ? 1 : progress(t, val);
     return `<button class="tile ${met ? 'met' : ''} ${over ? 'over' : ''}" data-log="${t.id}" aria-label="Log ${esc(t.name)}">
       ${met ? '<span class="badge-met">✓ goal</span>' : ''}
       ${over ? '<span class="badge-met badge-over">over limit</span>' : ''}
       ${isLimit && !over && val > 0 ? `<span class="badge-met badge-left">${round(t.goal - val, 2)} left</span>` : ''}
       <span class="name">${esc(t.icon)} ${esc(t.name)}</span>
-      ${val == null ? `<span class="val empty">Tap to log</span>` : `<span class="val">${fmt(val)}${goalTxt}</span>`}
+      ${val == null ? `<span class="val empty">${met ? 'Strength ✓' : 'Tap to log'}</span>` : `<span class="val">${fmt(val)}${goalTxt}</span>`}
       ${t.unit && val != null ? `<span class="small muted">${esc(t.unit)}</span>` : ''}
       ${t.mode === 'add' ? `<span class="quick" data-quick="${t.id}" role="button" aria-label="Add ${t.step} ${esc(t.unit)}">+</span>` : ''}
       <span class="bar"><i style="width:${barW * 100}%"></i></span>
@@ -404,6 +442,8 @@ function renderToday() {
     <h2>Track</h2>
     <section class="tiles">${tiles || '<p class="muted">No trackers enabled — add some in Settings.</p>'}</section>
 
+    ${strengthHTML(k, d)}
+
     ${todosHTML(k, isToday, d)}
 
     ${S.meals.length ? `<h2>Meals</h2><section class="card meals">${S.meals.map((m, i) => `
@@ -429,6 +469,138 @@ function renderToday() {
   $$('[data-chore]').forEach((b) => b.onclick = () => toggleChore(k, b.dataset.chore));
   bindMeals(k);
   bindTodos(k);
+  bindStrength(k);
+}
+
+/* ---------- Strength training ---------- */
+const sameName = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/** Most recent earlier session of an exercise with at least one completed set. */
+function lastSession(ex, beforeKey) {
+  for (const dk of Object.keys(S.days).sort().reverse()) {
+    if (dk >= beforeKey) continue;
+    const e = (S.days[dk].w || []).find((x) => sameName(x.ex, ex) && doneSets(x).length);
+    if (e) return { date: dk, sets: doneSets(e) };
+  }
+  return null;
+}
+function summarizeSets(sets, unit = S.wUnit) {
+  if (!sets.length) return '';
+  const same = sets.every((x) => x.w === sets[0].w && x.r === sets[0].r);
+  if (same) return `${sets.length}×${sets[0].r ?? '?'}${sets[0].w > 0 ? ` @ ${fmt(sets[0].w, unit)}` : ''}`;
+  return sets.map((x) => (x.w > 0 ? `${fmt(x.w)}×${x.r ?? '?'}` : `${x.r ?? '?'} reps`)).join(', ') + (sets.some((x) => x.w > 0) ? ` ${unit}` : '');
+}
+function allExerciseNames() {
+  const names = [...(S.exercises || [])];
+  for (const d of Object.values(S.days)) for (const e of d.w || []) if (!names.some((n) => sameName(n, e.ex))) names.push(e.ex);
+  return names;
+}
+
+function strengthHTML(k, d) {
+  if (!S.strength) return '';
+  const u = S.wUnit;
+  const cards = (d.w || []).map((e, ei) => {
+    const last = lastSession(e.ex, k);
+    const lastTxt = last ? `Last time (${dayLabel(last.date, { month: 'short', day: 'numeric' })}): ${summarizeSets(last.sets)}` : 'First time — this sets your baseline';
+    const rows = e.sets.map((x, si) => `
+      <div class="set ${x.done ? 'done' : ''}">
+        <span class="sn">${si + 1}</span>
+        <input class="inp" data-sw="${ei}.${si}" type="number" inputmode="decimal" step="any" value="${x.w ?? ''}" placeholder="—" aria-label="${esc(e.ex)} set ${si + 1} weight (${u})">
+        <input class="inp" data-sr="${ei}.${si}" type="number" inputmode="numeric" value="${x.r ?? ''}" placeholder="—" aria-label="${esc(e.ex)} set ${si + 1} reps">
+        <button class="setok" data-setdone="${ei}.${si}" aria-pressed="${!!x.done}" aria-label="${esc(e.ex)} set ${si + 1} done">${x.done ? '✓' : ''}</button>
+      </div>`).join('');
+    return `<div class="exercise">
+      <div class="exhead"><b>${esc(e.ex)}</b><span class="spacer"></span><button class="x" data-exdel="${ei}" aria-label="Remove ${esc(e.ex)}">✕</button></div>
+      <div class="small muted">${lastTxt}</div>
+      <div class="set sethead"><span>Set</span><span>${u}</span><span>Reps</span><span>Done</span></div>
+      ${rows}
+      <button class="btn addset" data-addset="${ei}">+ Set</button>
+    </div>`;
+  }).join('');
+  return `<h2>Strength <span class="muted small" style="text-transform:none;letter-spacing:0">+${XP.log} XP per exercise · +${XP.pr} per PR</span></h2>
+    <section class="card strength">${cards}<button class="btn block" id="addex">+ Add exercise</button></section>`;
+}
+
+function addExercise(k, name) {
+  name = String(name).trim().slice(0, 60);
+  if (!name) return;
+  const d = day(k);
+  d.w ||= [];
+  const existing = d.w.findIndex((e) => sameName(e.ex, name));
+  if (existing < 0) {
+    const last = lastSession(name, k);
+    // Pre-fill with exactly what you did last time — just tick each set as you go.
+    const sets = last ? last.sets.map((x) => ({ w: x.w ?? null, r: x.r ?? null, done: false })) : [{ w: null, r: null, done: false }];
+    d.w.push({ ex: last ? (S.days[last.date].w.find((e) => sameName(e.ex, name))?.ex || name) : name, sets });
+  }
+  if (!(S.exercises ||= []).some((n) => sameName(n, name))) S.exercises.push(name);
+  save(); render();
+  const ex = $$('.exercise')[existing < 0 ? d.w.length - 1 : existing];
+  ex?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function openExercisePicker(k) {
+  // Most recently trained first, then the rest alphabetically.
+  const lastDate = {};
+  for (const dk of Object.keys(S.days).sort()) for (const e of S.days[dk].w || []) if (doneSets(e).length) lastDate[e.ex.toLowerCase()] = dk;
+  const names = allExerciseNames().sort((a, b) => (lastDate[b.toLowerCase()] || '').localeCompare(lastDate[a.toLowerCase()] || '') || a.localeCompare(b));
+  const row = (n) => {
+    const last = lastSession(n, addDays(k, 1));
+    return `<button class="pick" data-pick="${esc(n)}"><b>${esc(n)}</b>${last ? `<span class="small muted">${dayLabel(last.date, { month: 'short', day: 'numeric' })} · ${summarizeSets(last.sets)}</span>` : ''}</button>`;
+  };
+  openSheet(`
+    <h3>Add exercise</h3>
+    <input class="inp" id="exsearch" placeholder="Search or type a new exercise" autocomplete="off" autocapitalize="words" enterkeyhint="done" style="margin:10px 0">
+    <div class="picklist" id="picklist">${names.map(row).join('')}</div>`, (sh) => {
+    const inp = $('#exsearch', sh), list = $('#picklist', sh);
+    const draw = () => {
+      const q = inp.value.trim().toLowerCase();
+      const hits = names.filter((n) => n.toLowerCase().includes(q));
+      const exact = names.some((n) => n.toLowerCase() === q);
+      const addNew = q && !exact ? `<button class="pick new" data-pick="${esc(inp.value.trim())}"><b>+ Add “${esc(inp.value.trim())}”</b></button>` : '';
+      list.innerHTML = hits.map(row).join('') + addNew;
+    };
+    inp.oninput = draw;
+    // Enter picks the best existing match; only creates a new exercise when nothing matches.
+    inp.onkeydown = (e) => { if (e.key === 'Enter') { const first = $('[data-pick]', list); if (first) first.click(); } };
+    list.onclick = (e) => { const b = e.target.closest('[data-pick]'); if (!b) return; closeSheet(); addExercise(k, b.dataset.pick); };
+    inp.focus();
+  });
+}
+
+function bindStrength(k) {
+  const sec = $('.strength');
+  if (!sec) return;
+  const at = (ref) => { const [ei, si] = ref.split('.').map(Number); return { e: day(k).w[ei], x: day(k).w[ei].sets[si] }; };
+  const num = (v) => (v === '' || v == null || Number.isNaN(parseFloat(v)) ? null : round(parseFloat(v), 2));
+  $('#addex').onclick = () => openExercisePicker(k);
+  $$('[data-sw]', sec).forEach((inp) => inp.onchange = () => { at(inp.dataset.sw).x.w = num(inp.value); save(); });
+  $$('[data-sr]', sec).forEach((inp) => inp.onchange = () => { at(inp.dataset.sr).x.r = num(inp.value); save(); });
+  $$('[data-setdone]', sec).forEach((b) => b.onclick = () => {
+    const ref = b.dataset.setdone, { x } = at(ref);
+    // Read the boxes directly so a value typed just before tapping ✓ is never lost.
+    x.w = num($(`[data-sw="${ref}"]`, sec).value);
+    x.r = num($(`[data-sr="${ref}"]`, sec).value);
+    if (!x.done && !(x.r > 0)) { toast('Enter reps first'); $(`[data-sr="${ref}"]`, sec).focus(); return; }
+    const before = computeAll().perDay[k] || dayStats(k);
+    x.done = !x.done;
+    vibrate(10);
+    afterChange(k, before);
+  });
+  $$('[data-addset]', sec).forEach((b) => b.onclick = () => {
+    const e = day(k).w[+b.dataset.addset];
+    const prev = e.sets[e.sets.length - 1];
+    e.sets.push({ w: prev?.w ?? null, r: prev?.r ?? null, done: false });
+    save(); render();
+  });
+  $$('[data-exdel]', sec).forEach((b) => b.onclick = () => {
+    const d = day(k), i = +b.dataset.exdel, e = d.w[i];
+    if (doneSets(e).length && !confirm(`Remove ${e.ex} and its ${doneSets(e).length} logged set(s) from this day?`)) return;
+    const before = computeAll().perDay[k] || dayStats(k);
+    d.w.splice(i, 1);
+    if (!d.w.length) delete d.w;
+    afterChange(k, before);
+  });
 }
 
 /* ---------- Ad-hoc to-dos ---------- */
@@ -642,12 +814,15 @@ function renderDash() {
     <h2>Trackers · last ${range} days</h2>
     ${trackerCards}
 
+    ${strengthDashHTML(keys)}
+
     ${mealsLogHTML(keys)}
 
     ${S.chores.length ? `<h2>Chore completion · last ${range} days</h2><section class="card hbar">${chores}</section>` : ''}
   `;
 
   $$('[data-range]').forEach((b) => b.onclick = () => { range = +b.dataset.range; render(); });
+  drawStrengthChart(keys);
   activeTrackers().forEach((t, i) => {
     const host = $(`[data-chart="${i}"]`);
     const vals = keys.map((k) => effVal(t, peekDay(k)) ?? null);
@@ -673,6 +848,55 @@ function mealsLogHTML(keys) {
     ${days.slice(0, 5).map(row).join('')}
     ${days.length > 5 ? `<details class="table"><summary>Show ${days.length - 5} more days</summary>${days.slice(5).map(row).join('')}</details>` : ''}
   </section>`;
+}
+
+let dashEx = null;
+function strengthHistory() {
+  // exercise (display name) → [{ date, sets }] oldest first
+  const map = new Map();
+  for (const dk of Object.keys(S.days).sort()) {
+    for (const e of S.days[dk].w || []) {
+      const sets = doneSets(e);
+      if (!sets.length) continue;
+      const key = [...map.keys()].find((n) => sameName(n, e.ex)) || e.ex;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push({ date: dk, sets });
+    }
+  }
+  return map;
+}
+function strengthDashHTML(keys) {
+  const hist = strengthHistory();
+  if (!hist.size) return '';
+  const byRecent = [...hist.entries()].sort((a, b) => b[1].at(-1).date.localeCompare(a[1].at(-1).date));
+  if (!dashEx || !hist.has(dashEx)) dashEx = byRecent[0][0];
+  const rows = byRecent.map(([ex, sessions]) => {
+    const last = sessions.at(-1), best = topOf(sessions.flatMap((x) => x.sets));
+    const inRange = sessions.filter((x) => x.date >= keys[0]).length;
+    return `<tr><td>${esc(ex)}</td><td>${dayLabel(last.date, { month: 'short', day: 'numeric' })}<br><span class="muted">${summarizeSets(last.sets)}</span></td>
+      <td style="white-space:nowrap">${best ? (best.kind === 'w' ? fmt(best.value, S.wUnit) : `${best.value} reps`) : '—'}</td><td>${inRange}</td></tr>`;
+  }).join('');
+  return `<h2>Strength · last ${range} days</h2>
+    <section class="card chart-card">
+      <div class="head"><select class="inp" id="dashex" aria-label="Exercise" style="width:auto;max-width:60%;padding:6px 10px">${byRecent.map(([ex]) => `<option ${ex === dashEx ? 'selected' : ''}>${esc(ex)}</option>`).join('')}</select>
+        <span class="meta" id="dashexmeta"></span></div>
+      <div id="strengthchart" data-tip-host></div>
+      <details class="table" open><summary>All exercises</summary><table>
+        <tr><th>Exercise</th><th>Last session</th><th>Best</th><th>${range}d</th></tr>${rows}</table></details>
+    </section>`;
+}
+function drawStrengthChart(keys) {
+  const host = $('#strengthchart');
+  if (!host) return;
+  const sessions = strengthHistory().get(dashEx) || [];
+  const byDate = Object.fromEntries(sessions.map((x) => [x.date, x.sets]));
+  const weighted = sessions.some((x) => x.sets.some((y) => y.w > 0));
+  const vals = keys.map((k) => { const top = byDate[k] && topOf(byDate[k]); return top ? top.value : null; });
+  const unit = weighted ? S.wUnit : 'reps';
+  const n = vals.filter((v) => v != null).length;
+  $('#dashexmeta').textContent = `${n} session${n === 1 ? '' : 's'} · top set ${weighted ? 'weight' : 'reps'}`;
+  lineChart(host, keys, vals, { name: dashEx, unit, goal: null, dir: 'none' }, { avg: false, extra: (i) => (byDate[keys[i]] ? `<br>${summarizeSets(byDate[keys[i]])}` : '') });
+  $('#dashex').onchange = (e) => { dashEx = e.target.value; drawStrengthChart(keys); };
 }
 
 function heatmapHTML(a) {
@@ -754,7 +978,7 @@ function barChart(host, keys, vals, t) {
   attachHover(host, svg, keys, w, pad, (i) => `<b>${dayLabel(keys[i])}</b><br>${vals[i] == null ? 'not logged' : `${fmt(vals[i], t.unit)}${t.dir !== 'none' && t.goal != null ? (goalMet(t, vals[i]) ? (t.dir === 'max' ? ' · within limit ✓' : ' · goal met ✓') : (t.dir === 'max' ? ' · over limit' : ' · below goal')) : ''}`}`, $('.guide', svg));
 }
 
-function lineChart(host, keys, vals, t) {
+function lineChart(host, keys, vals, t, opts = {}) {
   const w = 340, h = 150, pad = { t: 12, r: 8, b: 20, l: 38 };
   const got = vals.filter((v) => v != null);
   if (!got.length) { host.innerHTML = `<p class="muted small" style="margin:20px 0;text-align:center">Log ${esc(t.name.toLowerCase())} to see your trend.</p>`; return; }
@@ -762,6 +986,7 @@ function lineChart(host, keys, vals, t) {
   const ma = vals.map((_, i) => { const win = vals.slice(Math.max(0, i - 6), i + 1).filter((v) => v != null); return win.length ? win.reduce((s, v) => s + v, 0) / win.length : null; });
   const firstIdx = vals.findIndex((v) => v != null);
   for (let i = 0; i < firstIdx; i++) ma[i] = null;
+  if (opts.avg === false) ma.fill(null);
   let lo = Math.min(...got, ...(t.goal != null ? [t.goal] : [])), hi = Math.max(...got, ...(t.goal != null ? [t.goal] : []));
   const span = Math.max(hi - lo, 2); lo = Math.floor(lo - span * .2); hi = Math.ceil(hi + span * .2);
   const { y, xc, grid } = chartFrame(w, h, lo, hi, keys, pad);
@@ -776,7 +1001,7 @@ function lineChart(host, keys, vals, t) {
     <line class="guide" y1="${pad.t}" y2="${h - pad.b}" stroke="var(--text-muted)" stroke-width="1" opacity="0"/>
   </svg>`;
   const svg = $('svg', host);
-  attachHover(host, svg, keys, w, pad, (i) => `<b>${dayLabel(keys[i])}</b><br>${vals[i] == null ? 'not logged' : fmt(vals[i], t.unit)}${ma[i] != null ? `<br>7-day avg: ${fmt(round(ma[i], 1), t.unit)}` : ''}`, $('.guide', svg));
+  attachHover(host, svg, keys, w, pad, (i) => `<b>${dayLabel(keys[i])}</b><br>${vals[i] == null ? 'not logged' : fmt(vals[i], t.unit)}${ma[i] != null ? `<br>7-day avg: ${fmt(round(ma[i], 1), t.unit)}` : ''}${opts.extra ? opts.extra(i) : ''}`, $('.guide', svg));
 }
 
 /* ---------- Rewards ---------- */
@@ -878,6 +1103,16 @@ function renderSettings() {
         <input id="mealnames" value="${esc(S.meals.join(', '))}" placeholder="Breakfast, Lunch, Dinner"></div>
       <p class="muted" style="margin:0">Each logged meal earns +${XP.log} XP. Past entries show up as suggestions, so repeat meals take one tap.</p>
     </section>
+
+    <h2>Strength training</h2>
+    <section class="card small">
+      <div class="row"><b>Show on the Today screen</b><span class="spacer"></span><input type="checkbox" class="switch" id="strengthon" ${S.strength ? 'checked' : ''} aria-label="Show strength training"></div>
+      <div class="field"><label for="wunit">Weight unit</label><select id="wunit"><option ${S.wUnit === 'lb' ? 'selected' : ''}>lb</option><option ${S.wUnit === 'kg' ? 'selected' : ''}>kg</option></select></div>
+      <p class="muted" style="margin:0">Each exercise starts pre-filled with your last session. Logging any exercise also counts as hitting your Workout goal for the day.</p>
+    </section>
+
+    <h2>Google Sheets</h2>
+    <section class="card small" id="sheetscard">${sheetsHTML()}</section>
 
     <h2>Automatic logging</h2>
     <section class="card small">
@@ -984,6 +1219,9 @@ function renderSettings() {
     } catch (_) { toast('⚠️ That file isn\'t a LifeQuest backup'); }
   };
   bindReminders();
+  bindSheets();
+  $('#strengthon').onchange = (e) => { S.strength = e.target.checked; save(); };
+  $('#wunit').onchange = (e) => { S.wUnit = e.target.value; save(); };
   $('#mealnames').onchange = (e) => {
     S.meals = [...new Set(e.target.value.split(',').map((x) => x.trim()).filter(Boolean))];
     save(); toast('🍽️ Meals updated');
@@ -994,6 +1232,226 @@ function renderSettings() {
     }
   };
 }
+
+/* ======================= Google Sheets sync ======================= */
+const SYNC_KEY = 'lifequest.sync';
+const SHEET_URL_RE = /^https:\/\/script\.google(usercontent)?\.com\/macros\/(s|u\/\d+\/s)\/[\w-]+\/exec$/;
+let syncMeta = (() => { try { return JSON.parse(localStorage.getItem(SYNC_KEY)) || {}; } catch (_) { return {}; } })();
+const saveSyncMeta = () => { try { localStorage.setItem(SYNC_KEY, JSON.stringify(syncMeta)); } catch (_) {} };
+let syncTimer = null, syncing = false, syncAgain = false, changeCount = 0;
+
+function queueSync() {
+  if (!syncMeta.url) return;
+  changeCount++;
+  if (!syncMeta.dirty) { syncMeta.dirty = true; saveSyncMeta(); }
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => syncNow(), 4000);
+}
+
+/** Turn app data into plain tables: one row per day, one row per strength set. Newest first. */
+function buildSheetsPayload() {
+  const a = computeAll();
+  const trackers = activeTrackers();
+  const daily = S.chores.filter((c) => c.freq === 'daily');
+  const weekly = S.chores.filter((c) => c.freq === 'weekly');
+  const header = ['Date', 'Score %', 'Goals hit', 'Goals', 'XP', 'Streak',
+    ...trackers.map((t) => `${t.name}${t.unit ? ` (${t.unit})` : ''}`),
+    ...daily.map((c) => c.name), 'Weekly chores done', ...S.meals, 'To-dos done', 'Strength'];
+  const keys = Object.keys(S.days).filter((k) => rawActive(peekDay(k))).sort().reverse();
+  const rows = keys.map((k) => {
+    const d = peekDay(k), st = a.perDay[k] || dayStats(k);
+    return [k, Math.round(st.score * 100), st.hit, st.goals, st.xp, st.streak ?? '',
+      ...trackers.map((t) => effVal(t, d) ?? ''),
+      ...daily.map((c) => (d.c[c.id] ? '✓' : '')),
+      weekly.filter((c) => d.c[c.id]).map((c) => c.name).join(', '),
+      ...S.meals.map((m) => d.m?.[m] ?? ''),
+      (d.t || []).join('; '),
+      (d.w || []).filter((e) => doneSets(e).length).map((e) => `${e.ex} ${summarizeSets(doneSets(e))}`).join('; ')];
+  });
+  const wRows = [];
+  for (const k of keys) {
+    const prs = (a.perDay[k]?.prList || []);
+    for (const e of peekDay(k).w || []) {
+      const sets = doneSets(e);
+      const pr = prs.find((x) => sameName(x.ex, e.ex));
+      let marked = false;
+      sets.forEach((x, i) => {
+        const isPr = pr && !marked && (pr.kind === 'w' ? x.w === pr.value : x.r === pr.value);
+        if (isPr) marked = true;
+        wRows.push([k, e.ex, i + 1, x.w ?? '', x.w > 0 ? S.wUnit : '', x.r ?? '', x.w > 0 && x.r > 0 ? round(x.w * x.r, 1) : '', isPr ? '🏆 PR' : '']);
+      });
+    }
+  }
+  return {
+    sheets: {
+      Daily: { header, rows },
+      Workouts: { header: ['Date', 'Exercise', 'Set', 'Weight', 'Unit', 'Reps', 'Volume', 'PR'], rows: wRows },
+    },
+    backup: JSON.stringify(S),
+  };
+}
+
+async function postToSheet(url, body) {
+  try {
+    const res = await fetch(url, { method: 'POST', body }); // text/plain: no CORS preflight
+    const out = await res.json();
+    if (!out.ok) throw new Error(out.error || 'The Sheet rejected the update');
+    return out;
+  } catch (e) {
+    if (!(e instanceof TypeError || e instanceof SyntaxError)) throw e;
+    // Response unreadable (e.g. a CORS quirk): send again without reading the reply.
+    await fetch(url, { method: 'POST', body, mode: 'no-cors' });
+    return { ok: true, unconfirmed: true };
+  }
+}
+
+const localDayCount = () => Object.keys(S.days).filter((k) => rawActive(peekDay(k))).length;
+
+async function syncNow({ manual = false, force = false } = {}) {
+  if (!syncMeta.url) return false;
+  // Never let an empty phone (fresh install, cleared data) overwrite a Sheet automatically.
+  if (!force && !localDayCount()) return false;
+  if (syncing) { syncAgain = true; return false; }
+  if (!navigator.onLine) { if (manual) toast('📴 Offline — will sync when you’re back online'); return false; }
+  clearTimeout(syncTimer);
+  syncing = true;
+  const startedAt = changeCount;
+  let ok = false;
+  try {
+    const out = await postToSheet(syncMeta.url, JSON.stringify(buildSheetsPayload()));
+    syncMeta.lastSync = Date.now(); syncMeta.lastError = null; syncMeta.unconfirmed = !!out.unconfirmed;
+    if (changeCount === startedAt) syncMeta.dirty = false;
+    ok = true;
+  } catch (e) {
+    syncMeta.lastError = e.message || 'Could not reach the Sheet';
+    if (manual) toast(`⚠️ Sheets sync failed: ${syncMeta.lastError}`);
+  }
+  syncing = false;
+  saveSyncMeta();
+  if ($('#sheetscard')) { $('#sheetscard').innerHTML = sheetsHTML(); bindSheets(); }
+  if (syncAgain) { syncAgain = false; syncNow(); }
+  return ok;
+}
+
+function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`;
+}
+
+function sheetsHTML() {
+  const m = syncMeta;
+  const status = !m.url ? ''
+    : m.lastError ? `<p style="color:var(--critical);margin-top:0">⚠️ Last sync failed: ${esc(m.lastError)}${m.lastSync ? ` · last success ${ago(m.lastSync)}` : ''}</p>`
+    : m.lastSync ? `<p style="color:var(--good);margin-top:0;font-weight:600">✓ Connected · saved ${ago(m.lastSync)}${m.dirty ? ' · changes pending' : ''}</p>`
+    : '<p class="muted" style="margin-top:0">Connected — first sync pending.</p>';
+  const base = location.href.split(/[?#]/)[0].replace(/[^/]*$/, '');
+  return `
+    ${status}
+    <p style="margin-top:0">Saves everything to your own Google Sheet a few seconds after each change: a <b>Daily</b> tab (one row per day), a <b>Workouts</b> tab (one row per set) and a hidden full backup you can restore from.</p>
+    ${m.url ? `
+      <div class="small muted" style="word-break:break-all;margin-bottom:8px">${esc(m.url)}</div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn primary" id="sheetsync">Sync now</button>
+        <button class="btn" id="sheetrestore">Restore from Sheet</button>
+        <span class="spacer"></span>
+        <button class="btn danger" id="sheetoff">Disconnect</button>
+      </div>` : `
+      <div class="field"><label for="sheeturl">Sheet web app URL</label>
+        <input id="sheeturl" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      <button class="btn primary block" id="sheetconnect">Connect</button>
+      <details class="table" style="margin-top:10px"><summary>How to set it up (about 3 minutes, easiest on a computer)</summary>
+        <ol style="padding-left:18px">
+          <li>Create a new Google Sheet (<a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a>).</li>
+          <li>In the Sheet: <b>Extensions → Apps Script</b>. Delete what’s there and paste the script (button below, or <a href="${esc(base)}google-sheets/Code.gs" target="_blank" rel="noopener">open it</a>). Click 💾 Save.</li>
+          <li><b>Deploy → New deployment</b> → gear ⚙ → <b>Web app</b>. Set <i>Execute as</i>: <b>Me</b>, <i>Who has access</i>: <b>Anyone</b>. Click <b>Deploy</b> and allow access when Google asks (choose <i>Advanced → Go to project</i> if it warns that the app is unverified — it’s your own script).</li>
+          <li>Copy the <b>Web app URL</b> (ends in <code>/exec</code>), paste it above and tap <b>Connect</b>.</li>
+        </ol>
+        <button class="btn" id="copyscript">📋 Copy the script</button>
+      </details>`}`;
+}
+
+function bindSheets() {
+  const card = $('#sheetscard');
+  if (!card) return;
+  const busy = async (btn, fn) => {
+    const label = btn.textContent; btn.disabled = true; btn.textContent = '…';
+    try { await fn(); } catch (e) { toast(`⚠️ ${e.message}`); }
+    btn.disabled = false; btn.textContent = label;
+  };
+  $('#copyscript', card) && ($('#copyscript', card).onclick = () => busy($('#copyscript', card), async () => {
+    const code = await (await fetch('google-sheets/Code.gs', { cache: 'no-store' })).text();
+    await navigator.clipboard.writeText(code);
+    toast('📋 Script copied — paste it into Apps Script');
+  }));
+  $('#sheetconnect', card) && ($('#sheetconnect', card).onclick = (e) => busy(e.currentTarget, async () => {
+    const url = $('#sheeturl', card).value.trim();
+    if (!SHEET_URL_RE.test(url)) throw new Error('That doesn’t look like an Apps Script web app URL (it should end in /exec).');
+    let info;
+    try { info = await (await fetch(url)).json(); } catch (_) { info = null; }
+    if (info && info.service !== 'lifequest-sheets') throw new Error('That URL isn’t the LifeQuest script — check you pasted the right deployment.');
+    const remote = await fetchSheetBackup(url).catch(() => null);
+    syncMeta = { url };
+    saveSyncMeta();
+    const remoteDays = remote ? Object.keys(remote.days).length : 0;
+    if (!remoteDays) {
+      if (await syncNow({ manual: true, force: true })) toast('✅ Connected — your Sheet is up to date');
+      render();
+      return;
+    }
+    // The Sheet already holds data (e.g. setting up a new phone): ask which copy wins.
+    const localDays = localDayCount();
+    openSheet(`
+      <h3>This Sheet already has data</h3>
+      <p class="small muted">The Sheet has <b>${remoteDays}</b> day${remoteDays === 1 ? '' : 's'} of history; this phone has <b>${localDays}</b>.</p>
+      <button class="btn primary block" id="usesheet" style="margin-top:8px">Use the Sheet’s data on this phone</button>
+      <button class="btn block" id="usephone" style="margin-top:8px">Replace the Sheet with this phone’s data</button>
+      <button class="btn block" id="usecancel" style="margin-top:8px">Cancel</button>`, (sh) => {
+      $('#usesheet', sh).onclick = () => { closeSheet(); applyBackup(remote); syncMeta.lastSync = Date.now(); syncMeta.dirty = false; saveSyncMeta(); toast('✅ Connected — loaded your data from the Sheet'); render(); };
+      $('#usephone', sh).onclick = async () => {
+        if (!confirm(`Overwrite the Sheet’s ${remoteDays} days with this phone’s ${localDays}?`)) return;
+        closeSheet();
+        if (await syncNow({ manual: true, force: true })) toast('✅ Connected — Sheet replaced with this phone’s data');
+        render();
+      };
+      $('#usecancel', sh).onclick = () => { closeSheet(); syncMeta = {}; saveSyncMeta(); render(); };
+    });
+  }));
+  $('#sheetsync', card) && ($('#sheetsync', card).onclick = (e) => busy(e.currentTarget, async () => {
+    if (!localDayCount()) throw new Error('This phone has no data yet — use “Restore from Sheet” instead.');
+    if (await syncNow({ manual: true })) toast(syncMeta.unconfirmed ? '📤 Sent to your Sheet' : '✅ Sheet updated');
+  }));
+  $('#sheetoff', card) && ($('#sheetoff', card).onclick = () => {
+    if (!confirm('Stop syncing to this Sheet? Your Sheet keeps everything already saved.')) return;
+    syncMeta = {}; saveSyncMeta(); render();
+  });
+  $('#sheetrestore', card) && ($('#sheetrestore', card).onclick = (e) => busy(e.currentTarget, async () => {
+    const data = await fetchSheetBackup(syncMeta.url);
+    if (!data) throw new Error('No backup found in the Sheet yet.');
+    const n = Object.keys(data.days).length;
+    if (!confirm(`Replace the data on this phone with the Sheet’s copy (${n} day${n === 1 ? '' : 's'} of history)?`)) return;
+    applyBackup(data);
+    toast('✅ Restored from your Sheet'); render();
+  }));
+}
+
+/** The full backup stored in the Sheet, or null if there isn't one yet. */
+async function fetchSheetBackup(url) {
+  const out = await (await fetch(`${url}?action=backup`)).json();
+  if (!out.ok || !out.backup) return null;
+  const data = JSON.parse(out.backup);
+  if (!data || typeof data.days !== 'object' || !Array.isArray(data.trackers)) throw new Error('The backup in the Sheet is unreadable.');
+  return data;
+}
+function applyBackup(data) {
+  S = migrate({ ...defaults(), ...data, v: data.v || 1 });
+  save(); applyTheme();
+}
+
+addEventListener('online', () => { if (syncMeta.dirty) syncNow(); });
+document.addEventListener('visibilitychange', () => {
+  // Leaving the app: push pending changes now rather than waiting for the timer.
+  if (document.visibilityState === 'hidden' && syncMeta.dirty) syncNow();
+});
 
 /* ======================= Push reminders ======================= */
 // Set this to your deployed reminder worker URL to pre-fill it for new installs.
@@ -1010,7 +1468,7 @@ async function writeStatus() {
   try {
     const k = todayKey(), a = computeAll(), st = a.perDay[k] || dayStats(k), d = peekDay(k);
     const remaining = [
-      ...activeTrackers().filter((t) => t.dir === 'min' && t.goal != null && !goalMet(t, d.v[t.id])).map((t) => t.name),
+      ...activeTrackers().filter((t) => t.dir === 'min' && t.goal != null && !trackerMet(t, d)).map((t) => t.name),
       ...S.chores.filter((c) => c.freq === 'daily' && !d.c[c.id]).map((c) => c.name),
     ];
     const status = {
@@ -1191,6 +1649,7 @@ if (!handleQuickLog()) render();
 if (!S.seenBadges.length) { S.seenBadges = unlocked(computeAll()).map((b) => b.id); save(); }
 navigator.storage?.persist?.();
 writeStatus();
+if (syncMeta.dirty) setTimeout(() => syncNow(), 1500); // finish any sync that was interrupted
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
   // When a new version installs, reload once (unless you're mid-typing) so new features show up.

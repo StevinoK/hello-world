@@ -7,6 +7,8 @@ It's an installable phone app (a PWA, or Progressive Web App) made of plain HTML
 ## Features
 
 - **Today screen.** One tap opens a big number pad with your last value and quick-pick chips. Tracked items that add up (water, workout) get a one-tap **+** button. Chores are checkboxes, with weekly chores counting once per week. Use **‹** to backfill a day you missed.
+- **Strength training.** Add an exercise and log each set's weight and reps. Each exercise starts **pre-filled with exactly what you did last time**, so you just tick sets off, or nudge a number when you go up. A new personal record (PR) earns confetti and +25 XP. The Dashboard charts your top set for each exercise over time. Logging any exercise also counts as hitting your Workout goal.
+- **Google Sheets auto-save.** Every change is saved to your own Google Sheet a few seconds later (see below).
 - **To-dos.** One-off tasks you add at any time. Tap the circle to finish one: it disappears and earns +10 XP, with a short Undo window. Unfinished to-dos carry over to the next day, labeled with the day you added them.
 - **Meals and snacks.** Each meal has a text box, and suggestions from past entries mean repeat meals take one tap. Snacks is a one-tap counter with a daily **upper limit** (default 2, change it in Settings → Trackers → Snacks → Goal). It turns red when you go over, and staying under it counts toward a perfect day.
 - **Dashboard.** Shows your average daily score versus the previous period, your streak, perfect days and XP. A 15-week consistency heatmap shows how often you logged. Each tracker gets a 7/30/90-day chart with its goal line; weight gets a 7-day moving average. Chore completion rates are shown too. Tap any chart for exact values, or open its table view.
@@ -55,6 +57,30 @@ https://<you>.github.io/hello-world/?steps=8500&sleep=7.5&add_water=1&chore=Dish
 Sleep works the same way with *Sleep Analysis* (Calculate Statistics → Sum of duration, in hours). You can also add the same actions to a home-screen shortcut, or to a Back Tap gesture (iPhone Settings → Accessibility → Touch → Back Tap).
 
 **Android:** Tasker, MacroDroid or Google Assistant routines can open the same URL. Pass the value from Health Connect or Google Fit.
+
+## Google Sheets auto-save
+
+Once connected, the app writes everything to a Google Sheet you own, a few seconds after each change and right away when you leave the app. It writes three tabs:
+
+- **Daily:** one row per day, newest first. It has your score, XP, streak, every tracker value, chores, meals, finished to-dos, and a short strength summary.
+- **Workouts:** one row per set. It has the date, exercise, set number, weight, unit, reps, volume (weight × reps), and a 🏆 PR flag on record-setting sets.
+- **_LifeQuest backup** (hidden): a full copy of your data. **Restore from Sheet** in the app uses it, e.g. to set up a new phone.
+
+The app rewrites the **Daily** and **Workouts** tabs on every sync, so make your own charts or formulas in **other tabs** that read from them. Other tabs are never touched.
+
+### Setup (about 3 minutes; easiest on a computer)
+
+1. Create a new Google Sheet ([sheets.new](https://sheets.new)).
+2. Go to **Extensions → Apps Script**. Replace everything there with [`google-sheets/Code.gs`](google-sheets/Code.gs), then save. The app also has a **Copy the script** button.
+3. Go to **Deploy → New deployment → ⚙ → Web app**. Set *Execute as* to **Me** and *Who has access* to **Anyone**, then click **Deploy**. When Google warns the app is unverified, choose **Advanced → Go to project**: it's your own script.
+4. Copy the **Web app URL** (it ends in `/exec`). In LifeQuest, go to **Settings → Google Sheets**, paste it and tap **Connect**.
+
+Notes:
+
+- **Connecting with existing data:** if the Sheet already has data (e.g. you're setting up a new phone), the app asks whether to load the Sheet's data or replace it. A phone with no data never overwrites the Sheet automatically.
+- **Keep the URL private:** anyone who has it can write to those tabs.
+- **One phone at a time:** sync is designed for one phone. If two devices are connected to the same Sheet, the most recent sync overwrites the other's changes.
+- **Tests:** `node google-sheets/test.mjs`.
 
 ## Push reminders
 

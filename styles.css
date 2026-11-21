@@ -350,3 +350,22 @@ code, .code {
 .todo-done ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-secondary); }
 .toast.has-action { pointer-events: auto; display: flex; align-items: center; gap: 14px; }
 .toast-action { background: none; border: 0; color: var(--accent-soft); font-weight: 700; padding: 4px 2px; }
+
+/* ---------- Strength ---------- */
+.strength { padding: 0; overflow: hidden; }
+.strength > .btn.block { margin: 12px; width: calc(100% - 24px); }
+.exercise { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+.exhead { display: flex; align-items: center; gap: 8px; font-size: 17px; }
+.exhead .x { background: none; border: 0; color: var(--text-muted); font-size: 16px; width: 36px; height: 36px; }
+.set { display: grid; grid-template-columns: 32px 1fr 1fr 48px; gap: 8px; align-items: center; margin-top: 6px; }
+.set .sn { text-align: center; color: var(--text-muted); font-weight: 600; font-variant-numeric: tabular-nums; }
+.set .inp { text-align: center; font-size: 17px; font-weight: 600; padding: 9px 6px; font-variant-numeric: tabular-nums; }
+.set.done .inp { background: color-mix(in srgb, var(--good) 12%, var(--surface-2)); border-color: color-mix(in srgb, var(--good) 40%, var(--border)); }
+.sethead { margin-top: 8px; font-size: 11px; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.sethead span { text-align: center; }
+.setok { width: 44px; height: 44px; border-radius: 12px; border: 2px solid var(--border); background: var(--surface-1); font-size: 20px; font-weight: 700; color: var(--accent-ink); justify-self: center; }
+.set.done .setok { background: var(--good); border-color: var(--good); }
+.addset { margin-top: 10px; padding: 8px 14px; font-size: 14px; }
+.picklist { max-height: 50vh; overflow-y: auto; display: grid; gap: 6px; }
+.pick { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; }
+.pick.new { background: var(--accent-soft); }
