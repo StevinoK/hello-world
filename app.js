@@ -36,6 +36,7 @@ function defaults() {
     meals: [...DEFAULT_MEALS],
     strength: true,    // show the Strength card on Today
     wUnit: 'lb',
+    routines: [],      // { id, name, days: [0-6, Mon=0], exercises: [names] }
     exercises: ['Bench press', 'Squat', 'Deadlift', 'Overhead press', 'Barbell row', 'Pull-up', 'Lat pulldown', 'Dumbbell curl', 'Leg press', 'Push-up'],
     todos: [],         // open ad-hoc to-dos: { id, text, created: 'YYYY-MM-DD' } — removed when done
     created: todayKey(),
@@ -517,13 +518,73 @@ function strengthHTML(k, d) {
       <button class="btn addset" data-addset="${ei}">+ Set</button>
     </div>`;
   }).join('');
+  const routine = S.routines.find((r) => r.id === d.wr);
+  const top = d.w?.length
+    ? (routine ? `<div class="routine-now">🏋️ <b>${esc(routine.name)}</b></div>` : '')
+    : routinePickerHTML(k);
+  const saveAs = d.w?.length && !routine
+    ? `<button class="btn block" id="saveroutine">💾 Save as routine</button>` : '';
   return `<h2>Strength <span class="muted small" style="text-transform:none;letter-spacing:0">+${XP.log} XP per exercise · +${XP.pr} per PR</span></h2>
-    <section class="card strength">${cards}<button class="btn block" id="addex">+ Add exercise</button></section>`;
+    <section class="card strength">${top}${cards}<button class="btn block" id="addex">+ Add ${d.w?.length ? 'exercise' : 'a single exercise'}</button>${saveAs}</section>`;
+}
+
+/* ---------- Routines (workout templates for different days) ---------- */
+const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const weekdayOf = (k) => (parseKey(k).getDay() + 6) % 7;
+function routineLastDone(id, beforeKey = '9999') {
+  for (const dk of Object.keys(S.days).sort().reverse()) {
+    if (dk >= beforeKey) continue;
+    if (S.days[dk].wr === id && strengthDone(S.days[dk])) return dk;
+  }
+  return null;
+}
+/** Today's routine: the one scheduled for this weekday, else (no schedules at all) the one done longest ago. */
+function suggestRoutine(k) {
+  if (!S.routines.length) return { routine: null, rest: false };
+  const scheduled = S.routines.filter((r) => (r.days || []).includes(weekdayOf(k)));
+  if (scheduled.length) return { routine: scheduled[0], rest: false };
+  if (S.routines.some((r) => (r.days || []).length)) return { routine: null, rest: true };
+  const byOldest = S.routines.slice().sort((a, b) => (routineLastDone(a.id, k) || '').localeCompare(routineLastDone(b.id, k) || ''));
+  return { routine: byOldest[0], rest: false };
+}
+function routineMeta(r, k) {
+  const last = routineLastDone(r.id, k);
+  const days = (r.days || []).length ? r.days.slice().sort().map((i) => WEEKDAYS[i]).join('/') : '';
+  return [`${r.exercises.length} exercise${r.exercises.length === 1 ? '' : 's'}`, days, last ? `last ${dayLabel(last, { month: 'short', day: 'numeric' })}` : 'not done yet'].filter(Boolean).join(' · ');
+}
+function routinePickerHTML(k) {
+  if (!S.routines.length) {
+    return `<p class="small muted routine-tip">Tip: log a workout, then tap <b>Save as routine</b> (e.g. “Push day”). Next time it loads in one tap, pre-filled with your last weights.</p>`;
+  }
+  const { routine, rest } = suggestRoutine(k);
+  const others = S.routines.filter((r) => r !== routine);
+  return `<div class="routine-pick">
+    ${routine ? `<div class="small muted">${(routine.days || []).includes(weekdayOf(k)) ? `Scheduled for ${WEEKDAYS[weekdayOf(k)]}` : 'Up next'}</div>
+      <div class="row"><div><b style="font-size:18px">${esc(routine.name)}</b><div class="small muted">${routineMeta(routine, k)}</div></div>
+      <span class="spacer"></span><button class="btn primary" data-startroutine="${routine.id}">▶ Start</button></div>`
+    : rest ? `<div><b style="font-size:18px">Rest day 😌</b><div class="small muted">Nothing scheduled for ${WEEKDAYS[weekdayOf(k)]} — or pick one:</div></div>` : ''}
+    ${others.length ? `<div class="chips" style="margin-top:10px">${others.map((r) => `<button class="chip" data-startroutine="${r.id}" title="${esc(routineMeta(r, k))}">${esc(r.name)}</button>`).join('')}</div>` : ''}
+  </div>`;
+}
+function startRoutine(k, id) {
+  const r = S.routines.find((x) => x.id === id);
+  if (!r) return;
+  for (const name of r.exercises) addExerciseData(k, name);
+  day(k).wr = r.id;
+  save(); render();
+  toast(`🏋️ ${r.name} — pre-filled from your last sessions`);
 }
 
 function addExercise(k, name) {
+  const idx = addExerciseData(k, name);
+  if (idx < 0) return;
+  save(); render();
+  $$('.exercise')[idx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+/** Adds an exercise to a day (pre-filled from its last session) and returns its index; no render. */
+function addExerciseData(k, name) {
   name = String(name).trim().slice(0, 60);
-  if (!name) return;
+  if (!name) return -1;
   const d = day(k);
   d.w ||= [];
   const existing = d.w.findIndex((e) => sameName(e.ex, name));
@@ -534,12 +595,11 @@ function addExercise(k, name) {
     d.w.push({ ex: last ? (S.days[last.date].w.find((e) => sameName(e.ex, name))?.ex || name) : name, sets });
   }
   if (!(S.exercises ||= []).some((n) => sameName(n, name))) S.exercises.push(name);
-  save(); render();
-  const ex = $$('.exercise')[existing < 0 ? d.w.length - 1 : existing];
-  ex?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  return existing < 0 ? d.w.length - 1 : existing;
 }
 
-function openExercisePicker(k) {
+function openExercisePicker(onPick, title = 'Add exercise') {
+  const k = todayKey();
   // Most recently trained first, then the rest alphabetically.
   const lastDate = {};
   for (const dk of Object.keys(S.days).sort()) for (const e of S.days[dk].w || []) if (doneSets(e).length) lastDate[e.ex.toLowerCase()] = dk;
@@ -549,7 +609,7 @@ function openExercisePicker(k) {
     return `<button class="pick" data-pick="${esc(n)}"><b>${esc(n)}</b>${last ? `<span class="small muted">${dayLabel(last.date, { month: 'short', day: 'numeric' })} · ${summarizeSets(last.sets)}</span>` : ''}</button>`;
   };
   openSheet(`
-    <h3>Add exercise</h3>
+    <h3>${esc(title)}</h3>
     <input class="inp" id="exsearch" placeholder="Search or type a new exercise" autocomplete="off" autocapitalize="words" enterkeyhint="done" style="margin:10px 0">
     <div class="picklist" id="picklist">${names.map(row).join('')}</div>`, (sh) => {
     const inp = $('#exsearch', sh), list = $('#picklist', sh);
@@ -563,7 +623,7 @@ function openExercisePicker(k) {
     inp.oninput = draw;
     // Enter picks the best existing match; only creates a new exercise when nothing matches.
     inp.onkeydown = (e) => { if (e.key === 'Enter') { const first = $('[data-pick]', list); if (first) first.click(); } };
-    list.onclick = (e) => { const b = e.target.closest('[data-pick]'); if (!b) return; closeSheet(); addExercise(k, b.dataset.pick); };
+    list.onclick = (e) => { const b = e.target.closest('[data-pick]'); if (!b) return; closeSheet(); onPick(b.dataset.pick); };
     inp.focus();
   });
 }
@@ -573,7 +633,19 @@ function bindStrength(k) {
   if (!sec) return;
   const at = (ref) => { const [ei, si] = ref.split('.').map(Number); return { e: day(k).w[ei], x: day(k).w[ei].sets[si] }; };
   const num = (v) => (v === '' || v == null || Number.isNaN(parseFloat(v)) ? null : round(parseFloat(v), 2));
-  $('#addex').onclick = () => openExercisePicker(k);
+  $('#addex').onclick = () => openExercisePicker((name) => addExercise(k, name));
+  $$('[data-startroutine]', sec).forEach((b) => b.onclick = () => startRoutine(k, b.dataset.startroutine));
+  $('#saveroutine', sec) && ($('#saveroutine', sec).onclick = () => {
+    const d = day(k);
+    const name = prompt('Name this routine (e.g. Push day, Legs, Upper A)');
+    if (!name || !name.trim()) return;
+    const r = { id: 'r-' + uid(), name: name.trim().slice(0, 40), days: [], exercises: d.w.map((e) => e.ex) };
+    if (confirm(`Do “${r.name}” every ${WEEKDAYS[weekdayOf(k)]}?\n\nOK = schedule it for ${WEEKDAYS[weekdayOf(k)]}s · Cancel = no fixed day (it rotates)`)) r.days = [weekdayOf(k)];
+    S.routines.push(r);
+    d.wr = r.id;
+    save(); render();
+    toast(`💾 Saved “${r.name}” — edit it any time in Settings`);
+  });
   $$('[data-sw]', sec).forEach((inp) => inp.onchange = () => { at(inp.dataset.sw).x.w = num(inp.value); save(); });
   $$('[data-sr]', sec).forEach((inp) => inp.onchange = () => { at(inp.dataset.sr).x.r = num(inp.value); save(); });
   $$('[data-setdone]', sec).forEach((b) => b.onclick = () => {
@@ -598,7 +670,7 @@ function bindStrength(k) {
     if (doneSets(e).length && !confirm(`Remove ${e.ex} and its ${doneSets(e).length} logged set(s) from this day?`)) return;
     const before = computeAll().perDay[k] || dayStats(k);
     d.w.splice(i, 1);
-    if (!d.w.length) delete d.w;
+    if (!d.w.length) { delete d.w; delete d.wr; }
     afterChange(k, before);
   });
 }
@@ -881,6 +953,11 @@ function strengthDashHTML(keys) {
       <div class="head"><select class="inp" id="dashex" aria-label="Exercise" style="width:auto;max-width:60%;padding:6px 10px">${byRecent.map(([ex]) => `<option ${ex === dashEx ? 'selected' : ''}>${esc(ex)}</option>`).join('')}</select>
         <span class="meta" id="dashexmeta"></span></div>
       <div id="strengthchart" data-tip-host></div>
+      ${S.routines.length ? `<div class="hbar" style="margin-top:12px">${S.routines.map((r) => {
+        const n = keys.filter((k) => peekDay(k).wr === r.id && strengthDone(peekDay(k))).length;
+        const last = routineLastDone(r.id);
+        return `<span><b>${esc(r.name)}</b> <span class="muted small">${last ? `last ${dayLabel(last, { month: 'short', day: 'numeric' })}` : 'not done yet'}</span></span><span class="small tnum">${n}× in ${range}d</span>`;
+      }).join('')}</div>` : ''}
       <details class="table" open><summary>All exercises</summary><table>
         <tr><th>Exercise</th><th>Last session</th><th>Best</th><th>${range}d</th></tr>${rows}</table></details>
     </section>`;
@@ -1111,6 +1188,21 @@ function renderSettings() {
       <p class="muted" style="margin:0">Each exercise starts pre-filled with your last session. Logging any exercise also counts as hitting your Workout goal for the day.</p>
     </section>
 
+    <h2>Workout routines</h2>
+    <section class="card small">
+      <p class="muted" style="margin-top:0">One per workout day (e.g. Push / Pull / Legs). Pick the weekdays for each, or leave days blank and they’ll rotate — the one you did longest ago comes up next.</p>
+      ${S.routines.map((r, ri) => `
+        <div class="routine-edit" data-ri="${ri}">
+          <div class="row"><input class="inp" data-rname value="${esc(r.name)}" aria-label="Routine name" style="flex:1;font-weight:700">
+            <button class="btn danger" data-rdel aria-label="Delete ${esc(r.name)}">Delete</button></div>
+          <div class="daychips">${WEEKDAYS.map((w, i) => `<button class="chip ${(r.days || []).includes(i) ? 'on' : ''}" data-rday="${i}" aria-pressed="${(r.days || []).includes(i)}">${w}</button>`).join('')}</div>
+          ${r.exercises.map((x, xi) => `<div class="rex"><span>${xi + 1}. ${esc(x)}</span><span class="spacer"></span>
+            <button class="x" data-rup="${xi}" aria-label="Move up" ${xi ? '' : 'disabled'}>↑</button><button class="x" data-rxdel="${xi}" aria-label="Remove ${esc(x)}">✕</button></div>`).join('')}
+          <button class="btn" data-radd style="margin-top:6px">+ Exercise</button>
+        </div>`).join('')}
+      <button class="btn block" id="newroutine" style="margin-top:10px">+ New routine</button>
+    </section>
+
     <h2>Google Sheets</h2>
     <section class="card small" id="sheetscard">${sheetsHTML()}</section>
 
@@ -1222,6 +1314,33 @@ function renderSettings() {
   bindSheets();
   $('#strengthon').onchange = (e) => { S.strength = e.target.checked; save(); };
   $('#wunit').onchange = (e) => { S.wUnit = e.target.value; save(); };
+  $$('.routine-edit').forEach((el) => {
+    const r = S.routines[+el.dataset.ri];
+    $('[data-rname]', el).onchange = (e) => { r.name = e.target.value.trim() || r.name; save(); };
+    $$('[data-rday]', el).forEach((b) => b.onclick = () => {
+      const i = +b.dataset.rday;
+      r.days = (r.days || []).includes(i) ? r.days.filter((x) => x !== i) : [...(r.days || []), i];
+      save(); render();
+    });
+    $$('[data-rup]', el).forEach((b) => b.onclick = () => { const i = +b.dataset.rup; [r.exercises[i - 1], r.exercises[i]] = [r.exercises[i], r.exercises[i - 1]]; save(); render(); });
+    $$('[data-rxdel]', el).forEach((b) => b.onclick = () => { r.exercises.splice(+b.dataset.rxdel, 1); save(); render(); });
+    $('[data-radd]', el).onclick = () => openExercisePicker((name) => {
+      if (!r.exercises.some((x) => sameName(x, name))) r.exercises.push(name.trim());
+      if (!S.exercises.some((x) => sameName(x, name))) S.exercises.push(name.trim());
+      save(); render();
+    }, `Add to ${r.name}`);
+    $('[data-rdel]', el).onclick = () => {
+      if (!confirm(`Delete the routine “${r.name}”? Your logged workouts are kept.`)) return;
+      S.routines.splice(+el.dataset.ri, 1); save(); render();
+    };
+  });
+  $('#newroutine').onclick = () => {
+    const name = prompt('Routine name (e.g. Push day, Legs, Upper A)');
+    if (!name || !name.trim()) return;
+    S.routines.push({ id: 'r-' + uid(), name: name.trim().slice(0, 40), days: [], exercises: [] });
+    save(); render();
+    $$('.routine-edit').pop()?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
   $('#mealnames').onchange = (e) => {
     S.meals = [...new Set(e.target.value.split(',').map((x) => x.trim()).filter(Boolean))];
     save(); toast('🍽️ Meals updated');
@@ -1266,11 +1385,12 @@ function buildSheetsPayload() {
       weekly.filter((c) => d.c[c.id]).map((c) => c.name).join(', '),
       ...S.meals.map((m) => d.m?.[m] ?? ''),
       (d.t || []).join('; '),
-      (d.w || []).filter((e) => doneSets(e).length).map((e) => `${e.ex} ${summarizeSets(doneSets(e))}`).join('; ')];
+      (S.routines.find((r) => r.id === d.wr) ? `${S.routines.find((r) => r.id === d.wr).name}: ` : '') + (d.w || []).filter((e) => doneSets(e).length).map((e) => `${e.ex} ${summarizeSets(doneSets(e))}`).join('; ')];
   });
   const wRows = [];
   for (const k of keys) {
     const prs = (a.perDay[k]?.prList || []);
+    const rname = S.routines.find((r) => r.id === peekDay(k).wr)?.name || '';
     for (const e of peekDay(k).w || []) {
       const sets = doneSets(e);
       const pr = prs.find((x) => sameName(x.ex, e.ex));
@@ -1278,14 +1398,14 @@ function buildSheetsPayload() {
       sets.forEach((x, i) => {
         const isPr = pr && !marked && (pr.kind === 'w' ? x.w === pr.value : x.r === pr.value);
         if (isPr) marked = true;
-        wRows.push([k, e.ex, i + 1, x.w ?? '', x.w > 0 ? S.wUnit : '', x.r ?? '', x.w > 0 && x.r > 0 ? round(x.w * x.r, 1) : '', isPr ? '🏆 PR' : '']);
+        wRows.push([k, e.ex, i + 1, x.w ?? '', x.w > 0 ? S.wUnit : '', x.r ?? '', x.w > 0 && x.r > 0 ? round(x.w * x.r, 1) : '', isPr ? '🏆 PR' : '', rname]);
       });
     }
   }
   return {
     sheets: {
       Daily: { header, rows },
-      Workouts: { header: ['Date', 'Exercise', 'Set', 'Weight', 'Unit', 'Reps', 'Volume', 'PR'], rows: wRows },
+      Workouts: { header: ['Date', 'Exercise', 'Set', 'Weight', 'Unit', 'Reps', 'Volume', 'PR', 'Routine'], rows: wRows },
     },
     backup: JSON.stringify(S),
   };

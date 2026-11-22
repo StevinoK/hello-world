@@ -369,3 +369,15 @@ code, .code {
 .picklist { max-height: 50vh; overflow-y: auto; display: grid; gap: 6px; }
 .pick { text-align: left; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; display: grid; gap: 2px; }
 .pick.new { background: var(--accent-soft); }
+
+/* ---------- Routines ---------- */
+.routine-pick, .routine-now, .routine-tip { padding: 12px 14px; border-bottom: 1px solid var(--border); margin: 0; }
+.routine-now { font-size: 16px; background: var(--surface-2); }
+.strength > #saveroutine { margin: 0 12px 12px; width: calc(100% - 24px); }
+.routine-edit { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.routine-edit:last-of-type { border-bottom: 0; }
+.daychips { display: flex; gap: 4px; margin: 8px 0; }
+.daychips .chip { flex: 1; min-width: 0; padding: 7px 0; font-size: 13px; text-align: center; }
+.rex { display: flex; align-items: center; gap: 6px; padding: 2px 0; font-size: 15px; }
+.rex .x { background: none; border: 0; color: var(--text-muted); width: 34px; height: 34px; font-size: 15px; }
+.rex .x:disabled { opacity: .25; }
